@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"strconv"
 	"strings"
 )
 
@@ -22,11 +23,18 @@ func Serve(ctx context.Context, reader io.Reader, writer io.Writer) error {
 		if err != nil {
 			return err
 		}
-		if !strings.HasPrefix(strings.ToLower(line), "content-length:") {
+		lower := strings.ToLower(line)
+		if !strings.HasPrefix(lower, "content-length:") {
 			continue
 		}
-		var length int
-		fmt.Sscanf(line, "Content-Length: %d", &length)
+		parts := strings.SplitN(strings.TrimSpace(lower), ":", 2)
+		if len(parts) != 2 {
+			continue
+		}
+		length, parseErr := strconv.Atoi(strings.TrimSpace(parts[1]))
+		if parseErr != nil || length <= 0 {
+			continue
+		}
 		_, _ = buffered.ReadString('\n')
 		body := make([]byte, length)
 		if _, err := io.ReadFull(buffered, body); err != nil {
