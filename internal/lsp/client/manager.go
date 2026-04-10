@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"os"
 	"os/exec"
 	"sort"
 	"sync"
@@ -157,6 +158,7 @@ func (m *Manager) start(ctx context.Context) error {
 	m.server = protocol.ServerDispatcher(conn, m.zapLogger.Named(m.cfg.Name))
 
 	go m.captureStderr(stderr)
+	go m.reapIdleDocuments(ctx)
 
 	if err := m.initialize(ctx); err != nil {
 		_ = m.Shutdown(context.Background())
@@ -185,7 +187,7 @@ func (m *Manager) spawn() (io.WriteCloser, io.ReadCloser, io.ReadCloser, *exec.C
 		for key, value := range m.cfg.Env {
 			env = append(env, key+"="+value)
 		}
-		cmd.Env = append(cmd.Env, env...)
+		cmd.Env = append(os.Environ(), env...)
 	}
 	if err := cmd.Start(); err != nil {
 		return nil, nil, nil, nil, fmt.Errorf("start %s: %w", m.cfg.Command, err)
@@ -202,6 +204,28 @@ func (m *Manager) captureStderr(stderr io.Reader) {
 		}
 		if err != nil {
 			return
+		}
+	}
+}
+
+func (m *Manager) reapIdleDocuments(ctx context.Context) {
+	ttl := m.cfg.DocumentTTL.Duration
+	if ttl <= 0 {
+		ttl = 15 * time.Minute
+	}
+	ticker := time.NewTicker(time.Minute)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			now := time.Now()
+			for _, doc := range m.tracker.list() {
+				if now.Sub(doc.LastAccessed) > ttl {
+					_ = m.Close(context.Background(), doc.URI)
+				}
+			}
 		}
 	}
 }

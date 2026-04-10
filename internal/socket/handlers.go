@@ -5,17 +5,22 @@ import (
 	"time"
 
 	"github.com/harsha/lspd/internal/lsp/store"
-	"go.lsp.dev/protocol"
 )
 
 type handler struct {
-	store       *store.Store
-	policyReset func(string)
-	reload      func(context.Context) error
-	status      func() map[string]any
+	store  *store.Store
+	peek   func(context.Context, Request) (store.Entry, bool, error)
+	drain  func(context.Context, Request) (store.Entry, bool, error)
+	forget func(Request)
+	reload func(context.Context) error
+	status func() map[string]any
+	touch  func()
 }
 
 func (h *handler) handle(ctx context.Context, request Request) Response {
+	if h.touch != nil {
+		h.touch()
+	}
 	switch request.Op {
 	case "ping":
 		return Response{OK: true, Message: "pong", Time: time.Now()}
@@ -27,15 +32,26 @@ func (h *handler) handle(ctx context.Context, request Request) Response {
 		}
 		return Response{OK: true, Message: "reloaded", Time: time.Now()}
 	case "forget":
-		h.store.Forget(protocol.DocumentURI(request.Path))
+		if h.forget != nil {
+			h.forget(request)
+		}
 		return Response{OK: true, Message: "forgotten"}
 	case "peek", "drain":
-		entry, ok := h.store.Peek(protocol.DocumentURI(request.Path))
+		var (
+			entry store.Entry
+			ok    bool
+			err   error
+		)
+		if request.Op == "drain" && h.drain != nil {
+			entry, ok, err = h.drain(ctx, request)
+		} else if h.peek != nil {
+			entry, ok, err = h.peek(ctx, request)
+		}
+		if err != nil {
+			return Response{Message: err.Error()}
+		}
 		if !ok {
 			return Response{OK: true, Message: "not_found"}
-		}
-		if request.Op == "drain" && h.policyReset != nil {
-			h.policyReset(request.SessionID)
 		}
 		return Response{OK: true, Entry: &entry}
 	case "status":

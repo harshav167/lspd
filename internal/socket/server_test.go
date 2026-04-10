@@ -16,8 +16,12 @@ func TestServerPing(t *testing.T) {
 	t.Parallel()
 	path := filepath.Join(t.TempDir(), "lspd.sock")
 	diagnosticStore := store.New()
-	server := NewServer(path, diagnosticStore, func(string) {}, func(context.Context) error { return nil }, func() map[string]any {
-		return map[string]any{"port": 1234}
+	server := NewServer(path, diagnosticStore, Callbacks{
+		Peek:   func(context.Context, Request) (store.Entry, bool, error) { return store.Entry{}, false, nil },
+		Drain:  func(context.Context, Request) (store.Entry, bool, error) { return store.Entry{}, false, nil },
+		Forget: func(Request) {},
+		Reload: func(context.Context) error { return nil },
+		Status: func() map[string]any { return map[string]any{"port": 1234} },
 	})
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()

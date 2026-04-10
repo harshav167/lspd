@@ -8,6 +8,9 @@ type idleTimer struct {
 }
 
 func newIdleTimer(timeout time.Duration) *idleTimer {
+	if timeout <= 0 {
+		return &idleTimer{timeout: timeout}
+	}
 	return &idleTimer{timeout: timeout, timer: time.NewTimer(timeout)}
 }
 

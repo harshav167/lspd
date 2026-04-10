@@ -23,6 +23,7 @@ type Dependencies struct {
 	Store  *store.Store
 	Policy *policy.Engine
 	Logger *slog.Logger
+	Touch  func()
 }
 
 // Server exposes the daemon over MCP StreamableHTTP.
@@ -48,6 +49,9 @@ func NewServer(cfg config.Config, deps Dependencies) *Server {
 		Policy: deps.Policy,
 	})
 	handler := mcpsdk.NewStreamableHTTPServer(srv, mcpsdk.WithHTTPContextFunc(func(ctx context.Context, r *http.Request) context.Context {
+		if deps.Touch != nil {
+			deps.Touch()
+		}
 		return WithSessionID(ctx, r.Header.Get(cfg.MCP.SessionHeader))
 	}))
 	return &Server{

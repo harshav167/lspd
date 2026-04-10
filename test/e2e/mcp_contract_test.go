@@ -95,6 +95,27 @@ func TestMCPContractBoots(t *testing.T) {
 			t.Fatalf("expected %s stub success", name)
 		}
 	}
+	toolArgs := []mcp.CallToolRequest{
+		{Params: mcp.CallToolParams{Name: "lspDefinition", Arguments: map[string]any{"path": filepath.Join(t.TempDir(), "missing.go"), "line": 1, "character": 1}}},
+		{Params: mcp.CallToolParams{Name: "lspReferences", Arguments: map[string]any{"path": filepath.Join(t.TempDir(), "missing.go"), "line": 1, "character": 1, "include_declaration": true}}},
+		{Params: mcp.CallToolParams{Name: "lspHover", Arguments: map[string]any{"path": filepath.Join(t.TempDir(), "missing.go"), "line": 1, "character": 1}}},
+		{Params: mcp.CallToolParams{Name: "lspWorkspaceSymbol", Arguments: map[string]any{"query": "Add", "path": filepath.Join(t.TempDir(), "missing.go")}}},
+		{Params: mcp.CallToolParams{Name: "lspDocumentSymbol", Arguments: map[string]any{"path": filepath.Join(t.TempDir(), "missing.go")}}},
+		{Params: mcp.CallToolParams{Name: "lspCodeActions", Arguments: map[string]any{"path": filepath.Join(t.TempDir(), "missing.go"), "start_line": 1, "start_character": 1, "end_line": 1, "end_character": 2}}},
+		{Params: mcp.CallToolParams{Name: "lspRename", Arguments: map[string]any{"path": filepath.Join(t.TempDir(), "missing.go"), "line": 1, "character": 1, "new_name": "Renamed", "dry_run": true}}},
+		{Params: mcp.CallToolParams{Name: "lspFormat", Arguments: map[string]any{"path": filepath.Join(t.TempDir(), "missing.go")}}},
+		{Params: mcp.CallToolParams{Name: "lspCallHierarchy", Arguments: map[string]any{"path": filepath.Join(t.TempDir(), "missing.go"), "line": 1, "character": 1, "direction": "incoming"}}},
+		{Params: mcp.CallToolParams{Name: "lspTypeHierarchy", Arguments: map[string]any{"path": filepath.Join(t.TempDir(), "missing.go"), "line": 1, "character": 1, "direction": "super"}}},
+	}
+	for _, request := range toolArgs {
+		result, callErr := client.CallTool(context.Background(), request)
+		if callErr != nil {
+			t.Fatalf("CallTool %s: %v", request.Params.Name, callErr)
+		}
+		if !result.IsError {
+			t.Fatalf("expected %s to return a tool-visible error for invalid input", request.Params.Name)
+		}
+	}
 
 	if err := server.Close(context.Background()); err != nil {
 		t.Fatalf("Close: %v", err)

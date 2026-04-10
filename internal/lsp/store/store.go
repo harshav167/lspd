@@ -32,7 +32,15 @@ func New() *Store {
 // Publish stores diagnostics and wakes waiters.
 func (s *Store) Publish(uri protocol.DocumentURI, version int32, diagnostics []protocol.Diagnostic, language string) {
 	s.mu.Lock()
-	s.entries[uri] = Entry{URI: uri, Version: version, Diagnostics: cloneDiagnostics(diagnostics), UpdatedAt: time.Now(), Language: language}
+	effectiveVersion := version
+	if effectiveVersion == 0 {
+		if existing, ok := s.entries[uri]; ok && existing.Version > 0 {
+			effectiveVersion = existing.Version + 1
+		} else {
+			effectiveVersion = 1
+		}
+	}
+	s.entries[uri] = Entry{URI: uri, Version: effectiveVersion, Diagnostics: cloneDiagnostics(diagnostics), UpdatedAt: time.Now(), Language: language}
 	waiters := s.waiters[uri]
 	delete(s.waiters, uri)
 	s.mu.Unlock()

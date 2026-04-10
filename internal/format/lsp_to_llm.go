@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"path/filepath"
 	"strings"
 
 	"go.lsp.dev/protocol"
@@ -79,6 +80,11 @@ func marshalCode(code any) json.RawMessage {
 
 // Fingerprint computes the stable policy fingerprint.
 func Fingerprint(path string, diagnostic protocol.Diagnostic) string {
+	if !strings.Contains(path, "://") {
+		if abs, err := filepath.Abs(path); err == nil {
+			path = "file://" + filepath.ToSlash(abs)
+		}
+	}
 	digest := sha256.Sum256([]byte(fmt.Sprintf("%s|%d|%d|%v|%s|%s", path, diagnostic.Range.Start.Line, diagnostic.Range.Start.Character, diagnostic.Code, diagnostic.Source, diagnostic.Message)))
 	return hex.EncodeToString(digest[:])
 }

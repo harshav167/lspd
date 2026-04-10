@@ -19,9 +19,27 @@ type Server struct {
 	wg       sync.WaitGroup
 }
 
+// Callbacks customize socket semantics.
+type Callbacks struct {
+	Peek   func(context.Context, Request) (store.Entry, bool, error)
+	Drain  func(context.Context, Request) (store.Entry, bool, error)
+	Forget func(Request)
+	Status func() map[string]any
+	Reload func(context.Context) error
+	Touch  func()
+}
+
 // NewServer creates a socket server.
-func NewServer(path string, diagnosticStore *store.Store, resetSession func(string), reload func(context.Context) error, status func() map[string]any) *Server {
-	return &Server{path: path, handler: &handler{store: diagnosticStore, policyReset: resetSession, reload: reload, status: status}}
+func NewServer(path string, diagnosticStore *store.Store, callbacks Callbacks) *Server {
+	return &Server{path: path, handler: &handler{
+		store:  diagnosticStore,
+		peek:   callbacks.Peek,
+		drain:  callbacks.Drain,
+		forget: callbacks.Forget,
+		reload: callbacks.Reload,
+		status: callbacks.Status,
+		touch:  callbacks.Touch,
+	}}
 }
 
 // Start starts the socket server.

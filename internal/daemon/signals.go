@@ -7,7 +7,8 @@ import (
 	"syscall"
 )
 
-func watchSignals(ctx context.Context, onReload func(), onStop func()) {
+// WatchSignals binds SIGHUP/SIGINT/SIGTERM to the provided callbacks.
+func WatchSignals(ctx context.Context, onReload func(), onStop func()) {
 	signals := make(chan os.Signal, 2)
 	signal.Notify(signals, syscall.SIGHUP, syscall.SIGINT, syscall.SIGTERM)
 	go func() {

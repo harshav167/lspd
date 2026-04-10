@@ -12,6 +12,7 @@ import (
 	"github.com/harsha/lspd/internal/config"
 	"github.com/harsha/lspd/internal/lsp/client"
 	"github.com/harsha/lspd/internal/lsp/store"
+	"github.com/harsha/lspd/internal/lsp/supervisor"
 )
 
 // Router resolves file paths to language server managers.
@@ -21,11 +22,12 @@ type Router struct {
 	logger   *slog.Logger
 	mu       sync.Mutex
 	managers map[string]*client.Manager
+	supers   map[string]*supervisor.Supervisor
 }
 
 // New creates a router.
 func New(cfg config.Config, diagnosticStore *store.Store, logger *slog.Logger) *Router {
-	return &Router{cfg: cfg, store: diagnosticStore, logger: logger, managers: map[string]*client.Manager{}}
+	return &Router{cfg: cfg, store: diagnosticStore, logger: logger, managers: map[string]*client.Manager{}, supers: map[string]*supervisor.Supervisor{}}
 }
 
 // Resolve returns a manager for the provided path, creating it lazily.
@@ -49,6 +51,15 @@ func (r *Router) Resolve(ctx context.Context, path string) (*client.Manager, con
 		return nil, config.LanguageConfig{}, err
 	}
 	r.managers[key] = manager
+	super := supervisor.New(lang, root, r.store, r.logger)
+	r.supers[key] = super
+	go func() {
+		_, _ = super.Run(context.Background(), manager, func(replacement *client.Manager) {
+			r.mu.Lock()
+			defer r.mu.Unlock()
+			r.managers[key] = replacement
+		})
+	}()
 	return manager, lang, nil
 }
 
@@ -65,12 +76,13 @@ func (r *Router) Snapshot() map[string]*client.Manager {
 
 // ManagerState is a status-friendly snapshot of a running manager.
 type ManagerState struct {
-	Key       string    `json:"key"`
-	Language  string    `json:"language"`
-	Root      string    `json:"root"`
-	PID       int       `json:"pid"`
-	StartedAt time.Time `json:"started_at"`
-	Documents []string  `json:"documents"`
+	Key        string    `json:"key"`
+	Language   string    `json:"language"`
+	Root       string    `json:"root"`
+	PID        int       `json:"pid"`
+	StartedAt  time.Time `json:"started_at"`
+	Documents  []string  `json:"documents"`
+	Supervisor string    `json:"supervisor_state"`
 }
 
 // States returns sorted manager status entries.
@@ -85,13 +97,18 @@ func (r *Router) States() []ManagerState {
 	states := make([]ManagerState, 0, len(keys))
 	for _, key := range keys {
 		manager := r.managers[key]
+		superState := string(supervisor.StateHealthy)
+		if super, ok := r.supers[key]; ok {
+			superState = string(super.State())
+		}
 		states = append(states, ManagerState{
-			Key:       key,
-			Language:  manager.Language(),
-			Root:      manager.Root(),
-			PID:       manager.PID(),
-			StartedAt: manager.StartedAt(),
-			Documents: manager.DocumentPaths(),
+			Key:        key,
+			Language:   manager.Language(),
+			Root:       manager.Root(),
+			PID:        manager.PID(),
+			StartedAt:  manager.StartedAt(),
+			Documents:  manager.DocumentPaths(),
+			Supervisor: superState,
 		})
 	}
 	return states
