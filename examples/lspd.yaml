@@ -1,0 +1,27 @@
+run_dir: ~/.factory/run
+log_file: ~/.factory/logs/lspd.log
+idle_timeout: 30m
+mcp:
+  host: 127.0.0.1
+  endpoint: /mcp
+  session_header: X-Droid-Session-Id
+socket:
+  path: ~/.factory/run/lspd.sock
+metrics:
+  enabled: false
+policy:
+  max_per_file: 20
+  max_per_turn: 50
+  minimum_severity: 1
+  attach_code_actions: true
+languages:
+  ts:
+    command: typescript-language-server
+    args: ["--stdio"]
+    extensions: [".ts", ".tsx", ".js", ".jsx"]
+    root_markers: ["tsconfig.json", "package.json", ".git"]
+  py:
+    command: pyright-langserver
+    args: ["--stdio"]
+    extensions: [".py"]
+    root_markers: ["pyproject.toml", "setup.py", ".git"]

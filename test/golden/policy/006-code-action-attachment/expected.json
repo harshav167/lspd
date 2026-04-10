@@ -1,0 +1,13 @@
+{
+  "diagnostics": [
+    {
+      "message": "missing import",
+      "severity": 1,
+      "source": "ts",
+      "range": { "start": { "line": 4, "character": 2 }, "end": { "line": 4, "character": 8 } }
+    }
+  ],
+  "code_actions": {
+    "missing import": ["Add import", "Create symbol"]
+  }
+}

@@ -1,0 +1,11 @@
+{
+  "diagnostics": [
+    {
+      "message": "kept",
+      "severity": 1,
+      "source": "ruff",
+      "range": { "start": { "line": 2, "character": 0 }, "end": { "line": 2, "character": 4 } }
+    }
+  ],
+  "code_actions": {}
+}

@@ -1,0 +1,4 @@
+policy:
+  max_per_file: 1
+  max_per_turn: 50
+  minimum_severity: 1

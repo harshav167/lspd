@@ -1,0 +1,11 @@
+{
+  "diagnostics": [
+    {
+      "message": "first",
+      "severity": 1,
+      "source": "ts",
+      "range": { "start": { "line": 1, "character": 0 }, "end": { "line": 1, "character": 4 } }
+    }
+  ],
+  "code_actions": {}
+}

@@ -1,0 +1,17 @@
+{
+  "path": "/tmp/example.ts",
+  "diagnostics": [
+    {
+      "message": "info-level",
+      "severity": 3,
+      "source": "ts",
+      "range": { "start": { "line": 3, "character": 0 }, "end": { "line": 3, "character": 4 } }
+    },
+    {
+      "message": "warning-level",
+      "severity": 2,
+      "source": "ts",
+      "range": { "start": { "line": 4, "character": 0 }, "end": { "line": 4, "character": 4 } }
+    }
+  ]
+}

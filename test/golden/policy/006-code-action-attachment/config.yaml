@@ -1,0 +1,6 @@
+policy:
+  max_per_file: 20
+  max_per_turn: 50
+  minimum_severity: 1
+  attach_code_actions: true
+  max_code_actions_per_diagnostic: 2
