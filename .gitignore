@@ -2,9 +2,9 @@
 mcp-go/
 serena/
 
-# Built binaries
-lspd
-lsp-read-hook
+# Built binaries (root only — /prefix prevents matching cmd/lspd/ directory)
+/lspd
+/lsp-read-hook
 
 # Internal planning docs (not for public)
 PLAN.md
