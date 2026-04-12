@@ -35,14 +35,11 @@ mkdir -p "$HOME/.factory/run/lspd"
 mkdir -p "$HOME/.factory/logs/lspd"
 mkdir -p "$HOME/.factory/ide"
 
-# Stop existing daemon — try graceful first, then force kill
-if [ -x "$INSTALL_DIR/lspd" ]; then
-    "$INSTALL_DIR/lspd" stop --config "$CONFIG_DIR/lspd.yaml" >/dev/null 2>&1 || true
+# Check if lspd is already running (upgrade vs fresh install)
+ALREADY_RUNNING=false
+if [ -x "$INSTALL_DIR/lspd" ] && "$INSTALL_DIR/lspd" ping --config "$CONFIG_DIR/lspd.yaml" >/dev/null 2>&1; then
+    ALREADY_RUNNING=true
 fi
-# Force kill any remaining lspd processes and clean stale state
-pkill -9 -x lspd 2>/dev/null || true
-sleep 1
-rm -f "$HOME/.factory/ide/"*.lock "$HOME/.factory/run/lspd/lspd.pid" "$HOME/.factory/run/lspd/lspd.port" 2>/dev/null || true
 
 # Download binaries
 echo "==> Downloading binaries..."
@@ -115,23 +112,26 @@ with open(settings_path, "w") as f:
 print("    Hooks merged (ideAutoConnect: true)")
 PY
 
-# Start lspd NOW — so the lock file exists before droid ever starts.
-# No timing race. The daemon stays running across sessions.
-echo "==> Starting lspd..."
-"$INSTALL_DIR/lspd" stop --config "$CONFIG_DIR/lspd.yaml" >/dev/null 2>&1 || true
-"$INSTALL_DIR/lspd" start --config "$CONFIG_DIR/lspd.yaml" >/dev/null 2>&1
-
-# Verify it's running and the lock file exists
-if "$INSTALL_DIR/lspd" ping --config "$CONFIG_DIR/lspd.yaml" >/dev/null 2>&1; then
-    LOCK_COUNT=$(ls "$HOME/.factory/ide/"*.lock 2>/dev/null | wc -l)
-    PORT=$(cat "$HOME/.factory/run/lspd/lspd.port" 2>/dev/null || echo "unknown")
-    echo "    lspd running on port $PORT ($LOCK_COUNT lock file(s))"
+if [ "$ALREADY_RUNNING" = true ]; then
+    # Upgrade: binary replaced on disk. Running process keeps the old binary in memory.
+    # It picks up the new binary on next restart (session end, reboot, or manual lspd restart).
+    echo "==> lspd is running — binary updated on disk."
+    echo "    Active sessions stay connected. New binary takes effect on next restart."
+    echo "    To restart now: lspd stop && lspd start --config $CONFIG_DIR/lspd.yaml"
 else
-    echo "    WARNING: lspd failed to start. Run '$INSTALL_DIR/lspd start --config $CONFIG_DIR/lspd.yaml' manually."
+    # Fresh install: start lspd so the lock file exists before droid starts.
+    echo "==> Starting lspd..."
+    "$INSTALL_DIR/lspd" start --config "$CONFIG_DIR/lspd.yaml" >/dev/null 2>&1
+    if "$INSTALL_DIR/lspd" ping --config "$CONFIG_DIR/lspd.yaml" >/dev/null 2>&1; then
+        PORT=$(cat "$HOME/.factory/run/lspd/lspd.port" 2>/dev/null || echo "unknown")
+        echo "    lspd running on port $PORT"
+    else
+        echo "    WARNING: lspd failed to start. Run '$INSTALL_DIR/lspd start --config $CONFIG_DIR/lspd.yaml' manually."
+    fi
 fi
 
 echo ""
-echo "Done! Run 'droid' normally — lspd is already running."
+echo "Done! Run 'droid' normally — lspd starts automatically."
 echo ""
 echo "Update:    curl -fsSL https://github.com/$REPO/releases/latest/download/install.sh | sh"
 echo "Uninstall: curl -fsSL https://github.com/$REPO/releases/latest/download/uninstall.sh | sh"
