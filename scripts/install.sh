@@ -35,10 +35,14 @@ mkdir -p "$HOME/.factory/run/lspd"
 mkdir -p "$HOME/.factory/logs/lspd"
 mkdir -p "$HOME/.factory/ide"
 
-# Stop existing daemon if running
+# Stop existing daemon — try graceful first, then force kill
 if [ -x "$INSTALL_DIR/lspd" ]; then
     "$INSTALL_DIR/lspd" stop --config "$CONFIG_DIR/lspd.yaml" >/dev/null 2>&1 || true
 fi
+# Force kill any remaining lspd processes and clean stale state
+pkill -9 -x lspd 2>/dev/null || true
+sleep 1
+rm -f "$HOME/.factory/ide/"*.lock "$HOME/.factory/run/lspd/lspd.pid" "$HOME/.factory/run/lspd/lspd.port" 2>/dev/null || true
 
 # Download binaries
 echo "==> Downloading binaries..."
