@@ -111,8 +111,23 @@ with open(settings_path, "w") as f:
 print("    Hooks merged (ideAutoConnect: true)")
 PY
 
+# Start lspd NOW — so the lock file exists before droid ever starts.
+# No timing race. The daemon stays running across sessions.
+echo "==> Starting lspd..."
+"$INSTALL_DIR/lspd" stop --config "$CONFIG_DIR/lspd.yaml" >/dev/null 2>&1 || true
+"$INSTALL_DIR/lspd" start --config "$CONFIG_DIR/lspd.yaml" >/dev/null 2>&1
+
+# Verify it's running and the lock file exists
+if "$INSTALL_DIR/lspd" ping --config "$CONFIG_DIR/lspd.yaml" >/dev/null 2>&1; then
+    LOCK_COUNT=$(ls "$HOME/.factory/ide/"*.lock 2>/dev/null | wc -l)
+    PORT=$(cat "$HOME/.factory/run/lspd/lspd.port" 2>/dev/null || echo "unknown")
+    echo "    lspd running on port $PORT ($LOCK_COUNT lock file(s))"
+else
+    echo "    WARNING: lspd failed to start. Run '$INSTALL_DIR/lspd start --config $CONFIG_DIR/lspd.yaml' manually."
+fi
+
 echo ""
-echo "Done! Run 'droid' normally — lspd starts automatically."
+echo "Done! Run 'droid' normally — lspd is already running."
 echo ""
 echo "Update:    curl -fsSL https://github.com/$REPO/releases/latest/download/install.sh | sh"
 echo "Uninstall: curl -fsSL https://github.com/$REPO/releases/latest/download/uninstall.sh | sh"
