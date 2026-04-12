@@ -4,7 +4,7 @@ import (
 	"context"
 	"testing"
 
-	"github.com/harsha/lspd/internal/metrics"
+	"github.com/harshav167/lspd/internal/metrics"
 	sdkmcp "github.com/mark3labs/mcp-go/mcp"
 )
 

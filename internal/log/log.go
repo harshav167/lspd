@@ -6,7 +6,7 @@ import (
 	"log/slog"
 	"os"
 
-	"github.com/harsha/lspd/internal/config"
+	"github.com/harshav167/lspd/internal/config"
 	lumberjack "gopkg.in/natefinch/lumberjack.v2"
 )
 

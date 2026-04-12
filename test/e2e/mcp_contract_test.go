@@ -15,11 +15,11 @@ import (
 	mcpclient "github.com/mark3labs/mcp-go/client"
 	"github.com/mark3labs/mcp-go/mcp"
 
-	"github.com/harsha/lspd/internal/config"
-	"github.com/harsha/lspd/internal/lsp/router"
-	"github.com/harsha/lspd/internal/lsp/store"
-	internalmcp "github.com/harsha/lspd/internal/mcp"
-	"github.com/harsha/lspd/internal/policy"
+	"github.com/harshav167/lspd/internal/config"
+	"github.com/harshav167/lspd/internal/lsp/router"
+	"github.com/harshav167/lspd/internal/lsp/store"
+	internalmcp "github.com/harshav167/lspd/internal/mcp"
+	"github.com/harshav167/lspd/internal/policy"
 	"go.lsp.dev/protocol"
 )
 

@@ -4,7 +4,7 @@ import (
 	"context"
 	"sort"
 
-	"github.com/harsha/lspd/internal/format"
+	"github.com/harshav167/lspd/internal/format"
 	sdkmcp "github.com/mark3labs/mcp-go/mcp"
 	"go.lsp.dev/protocol"
 )

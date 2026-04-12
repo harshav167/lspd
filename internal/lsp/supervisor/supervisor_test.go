@@ -7,8 +7,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/harsha/lspd/internal/config"
-	"github.com/harsha/lspd/internal/lsp/store"
+	"github.com/harshav167/lspd/internal/config"
+	"github.com/harshav167/lspd/internal/lsp/store"
 )
 
 func testSupervisor() *Supervisor {

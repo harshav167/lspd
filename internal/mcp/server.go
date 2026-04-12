@@ -8,13 +8,13 @@ import (
 	"net/http"
 	"time"
 
-	"github.com/harsha/lspd/internal/config"
-	"github.com/harsha/lspd/internal/lsp/router"
-	"github.com/harsha/lspd/internal/lsp/store"
-	compattools "github.com/harsha/lspd/internal/mcp/tools/compat"
-	navtools "github.com/harsha/lspd/internal/mcp/tools/nav"
-	"github.com/harsha/lspd/internal/metrics"
-	"github.com/harsha/lspd/internal/policy"
+	"github.com/harshav167/lspd/internal/config"
+	"github.com/harshav167/lspd/internal/lsp/router"
+	"github.com/harshav167/lspd/internal/lsp/store"
+	compattools "github.com/harshav167/lspd/internal/mcp/tools/compat"
+	navtools "github.com/harshav167/lspd/internal/mcp/tools/nav"
+	"github.com/harshav167/lspd/internal/metrics"
+	"github.com/harshav167/lspd/internal/policy"
 	mcpsdk "github.com/mark3labs/mcp-go/server"
 )
 

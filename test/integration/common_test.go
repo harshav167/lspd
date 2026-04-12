@@ -16,11 +16,11 @@ import (
 	"testing"
 	"time"
 
-	"github.com/harsha/lspd/internal/config"
-	"github.com/harsha/lspd/internal/lsp/client"
-	"github.com/harsha/lspd/internal/lsp/router"
-	"github.com/harsha/lspd/internal/lsp/store"
-	"github.com/harsha/lspd/test/mocklsp"
+	"github.com/harshav167/lspd/internal/config"
+	"github.com/harshav167/lspd/internal/lsp/client"
+	"github.com/harshav167/lspd/internal/lsp/router"
+	"github.com/harshav167/lspd/internal/lsp/store"
+	"github.com/harshav167/lspd/test/mocklsp"
 	"go.lsp.dev/protocol"
 )
 

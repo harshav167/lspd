@@ -5,7 +5,7 @@ package integration
 import (
 	"testing"
 
-	"github.com/harsha/lspd/internal/config"
+	"github.com/harshav167/lspd/internal/config"
 )
 
 func TestPyrightDiagnostics(t *testing.T) {

@@ -7,8 +7,8 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/harsha/lspd/internal/config"
-	internalformat "github.com/harsha/lspd/internal/format"
+	"github.com/harshav167/lspd/internal/config"
+	internalformat "github.com/harshav167/lspd/internal/format"
 	"go.lsp.dev/protocol"
 	"gopkg.in/yaml.v3"
 )

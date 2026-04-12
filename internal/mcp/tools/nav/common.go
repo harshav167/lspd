@@ -11,12 +11,12 @@ import (
 	"strings"
 	"unicode"
 
-	"github.com/harsha/lspd/internal/format"
-	"github.com/harsha/lspd/internal/lsp/client"
-	"github.com/harsha/lspd/internal/lsp/router"
-	"github.com/harsha/lspd/internal/lsp/store"
-	"github.com/harsha/lspd/internal/metrics"
-	"github.com/harsha/lspd/internal/policy"
+	"github.com/harshav167/lspd/internal/format"
+	"github.com/harshav167/lspd/internal/lsp/client"
+	"github.com/harshav167/lspd/internal/lsp/router"
+	"github.com/harshav167/lspd/internal/lsp/store"
+	"github.com/harshav167/lspd/internal/metrics"
+	"github.com/harshav167/lspd/internal/policy"
 	sdkmcp "github.com/mark3labs/mcp-go/mcp"
 	"go.lsp.dev/protocol"
 )

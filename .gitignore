@@ -1,5 +1,24 @@
+# Reference clones (local only, not part of the project)
 mcp-go/
 serena/
+
+# Built binaries
 lspd
 lsp-read-hook
+
+# Internal planning docs (not for public)
+PLAN.md
+SOLO_IMPL_CONTRACT.md
+
+# Dev/testing artifacts
+droid-lsp-config.yaml
+droid-lsp-settings.json
+droid-lsp-testing-prompt.md
+lsp_diag_smoke.go
+
+# Serena project state
+.serena/
+
+# Runtime state
 .factory/
+*.log

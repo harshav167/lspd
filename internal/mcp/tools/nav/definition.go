@@ -3,8 +3,8 @@ package nav
 import (
 	"context"
 
-	"github.com/harsha/lspd/internal/format"
-	"github.com/harsha/lspd/internal/mcp/descriptions"
+	"github.com/harshav167/lspd/internal/format"
+	"github.com/harshav167/lspd/internal/mcp/descriptions"
 	sdkmcp "github.com/mark3labs/mcp-go/mcp"
 	sdkserver "github.com/mark3labs/mcp-go/server"
 	"go.lsp.dev/protocol"

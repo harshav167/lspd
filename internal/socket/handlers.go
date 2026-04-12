@@ -4,7 +4,7 @@ import (
 	"context"
 	"time"
 
-	"github.com/harsha/lspd/internal/lsp/store"
+	"github.com/harshav167/lspd/internal/lsp/store"
 )
 
 type handler struct {

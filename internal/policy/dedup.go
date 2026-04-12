@@ -1,7 +1,7 @@
 package policy
 
 import (
-	internalformat "github.com/harsha/lspd/internal/format"
+	internalformat "github.com/harshav167/lspd/internal/format"
 	"go.lsp.dev/protocol"
 )
 

@@ -1,4 +1,0 @@
-run_dir: ~/.factory/run/droid-lsp
-log_file: ~/.factory/logs/droid-lsp/lspd.log
-socket:
-  path: ~/.factory/run/droid-lsp/lspd.sock

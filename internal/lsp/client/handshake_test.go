@@ -4,7 +4,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/harsha/lspd/internal/config"
+	"github.com/harshav167/lspd/internal/config"
 	"go.lsp.dev/protocol"
 )
 

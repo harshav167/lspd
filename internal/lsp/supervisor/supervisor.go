@@ -6,10 +6,10 @@ import (
 	"sync"
 	"time"
 
-	"github.com/harsha/lspd/internal/config"
-	"github.com/harsha/lspd/internal/lsp/client"
-	"github.com/harsha/lspd/internal/lsp/store"
-	"github.com/harsha/lspd/internal/metrics"
+	"github.com/harshav167/lspd/internal/config"
+	"github.com/harshav167/lspd/internal/lsp/client"
+	"github.com/harshav167/lspd/internal/lsp/store"
+	"github.com/harshav167/lspd/internal/metrics"
 )
 
 // State represents current supervisor health.

@@ -3,7 +3,7 @@ package socket
 import (
 	"time"
 
-	"github.com/harsha/lspd/internal/lsp/store"
+	"github.com/harshav167/lspd/internal/lsp/store"
 )
 
 // Request is the unix socket RPC request shape.

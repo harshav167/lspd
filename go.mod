@@ -1,4 +1,4 @@
-module github.com/harsha/lspd
+module github.com/harshav167/lspd
 
 go 1.26.2
 

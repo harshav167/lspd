@@ -5,7 +5,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/harsha/lspd/internal/config"
+	"github.com/harshav167/lspd/internal/config"
 )
 
 func TestLevelForRespectsConfig(t *testing.T) {

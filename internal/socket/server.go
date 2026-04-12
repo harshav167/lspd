@@ -10,7 +10,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/harsha/lspd/internal/lsp/store"
+	"github.com/harshav167/lspd/internal/lsp/store"
 )
 
 // Server serves unix socket requests from the read hook and CLI.

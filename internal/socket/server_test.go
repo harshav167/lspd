@@ -9,7 +9,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/harsha/lspd/internal/lsp/store"
+	"github.com/harshav167/lspd/internal/lsp/store"
 	"go.lsp.dev/protocol"
 )
 

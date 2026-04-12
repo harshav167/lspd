@@ -11,9 +11,9 @@ import (
 	"sync"
 	"time"
 
-	"github.com/harsha/lspd/internal/config"
-	"github.com/harsha/lspd/internal/lsp/store"
-	"github.com/harsha/lspd/internal/metrics"
+	"github.com/harshav167/lspd/internal/config"
+	"github.com/harshav167/lspd/internal/lsp/store"
+	"github.com/harshav167/lspd/internal/metrics"
 	"go.lsp.dev/jsonrpc2"
 	"go.lsp.dev/protocol"
 	"go.uber.org/zap"
