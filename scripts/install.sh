@@ -1,179 +1,118 @@
-#!/usr/bin/env sh
-# lspd installer — production setup via hooks + lock file auto-discovery.
+#!/bin/sh
+# lspd installer — downloads pre-built binaries, merges hooks, zero dependencies.
 # Idempotent: safe to run multiple times.
 set -eu
 
-PROJ_DIR="$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)"
-BIN_DIR="${HOME}/.local/bin"
-CONFIG_DIR="${HOME}/.factory/hooks/lsp"
-CONFIG_FILE="${CONFIG_DIR}/lspd.yaml"
-SETTINGS_FILE="${HOME}/.factory/settings.json"
+REPO="harshav167/lspd"
+INSTALL_DIR="${LSPD_INSTALL_DIR:-$HOME/.local/bin}"
+CONFIG_DIR="$HOME/.factory/hooks/lsp"
+SETTINGS_FILE="$HOME/.factory/settings.json"
 
-info() { printf '\033[1;34m==>\033[0m %s\n' "$1"; }
-ok()   { printf '\033[1;32m OK\033[0m %s\n' "$1"; }
-die()  { printf '\033[1;31mERROR:\033[0m %s\n' "$1" >&2; exit 1; }
+# Detect platform
+OS="$(uname -s | tr '[:upper:]' '[:lower:]')"
+ARCH="$(uname -m)"
+case "$ARCH" in
+    x86_64)  ARCH="amd64" ;;
+    aarch64) ARCH="arm64" ;;
+    arm64)   ARCH="arm64" ;;
+    *)       echo "Error: unsupported architecture: $ARCH" >&2; exit 1 ;;
+esac
 
-# ── 1. Build binaries ────────────────────────────────────────────────
-info "Building lspd and lsp-read-hook..."
-mkdir -p "$BIN_DIR"
-(cd "$PROJ_DIR" && go build -o "${BIN_DIR}/lspd" ./cmd/lspd)
-(cd "$PROJ_DIR" && go build -o "${BIN_DIR}/lsp-read-hook" ./cmd/lsp-read-hook)
-ok "Binaries installed to ${BIN_DIR}/"
+# Resolve version
+VERSION="${LSPD_VERSION:-latest}"
+if [ "$VERSION" = "latest" ]; then
+    DOWNLOAD_BASE="https://github.com/$REPO/releases/latest/download"
+else
+    DOWNLOAD_BASE="https://github.com/$REPO/releases/download/$VERSION"
+fi
 
-# ── 2. Install session-start script ─────────────────────────────────
-info "Installing lspd-session-start..."
-install -m 0755 "${PROJ_DIR}/scripts/session-start.sh" "${BIN_DIR}/lspd-session-start"
-ok "lspd-session-start installed"
+echo "==> Installing lspd for $OS/$ARCH..."
 
-# ── 3. Write daemon config (if not exists) ───────────────────────────
-info "Checking daemon config..."
+# Create directories
+mkdir -p "$INSTALL_DIR"
 mkdir -p "$CONFIG_DIR"
-if [ ! -f "$CONFIG_FILE" ]; then
-  cat > "$CONFIG_FILE" << 'YAML'
+mkdir -p "$HOME/.factory/run/lspd"
+mkdir -p "$HOME/.factory/logs/lspd"
+mkdir -p "$HOME/.factory/ide"
+
+# Stop existing daemon if running
+if [ -x "$INSTALL_DIR/lspd" ]; then
+    "$INSTALL_DIR/lspd" stop --config "$CONFIG_DIR/lspd.yaml" >/dev/null 2>&1 || true
+fi
+
+# Download binaries
+echo "==> Downloading binaries..."
+curl -fsSL "$DOWNLOAD_BASE/lspd-$OS-$ARCH" -o "$INSTALL_DIR/lspd"
+curl -fsSL "$DOWNLOAD_BASE/lsp-read-hook-$OS-$ARCH" -o "$INSTALL_DIR/lsp-read-hook"
+curl -fsSL "$DOWNLOAD_BASE/session-start.sh" -o "$INSTALL_DIR/lspd-session-start"
+chmod +x "$INSTALL_DIR/lspd" "$INSTALL_DIR/lsp-read-hook" "$INSTALL_DIR/lspd-session-start"
+echo "    Installed to $INSTALL_DIR"
+
+# Write config (skip if exists — don't overwrite user customizations)
+if [ ! -f "$CONFIG_DIR/lspd.yaml" ]; then
+    cat > "$CONFIG_DIR/lspd.yaml" << 'YAML'
 run_dir: ~/.factory/run/lspd
 log_file: ~/.factory/logs/lspd/lspd.log
 socket:
   path: ~/.factory/run/lspd/lspd.sock
 YAML
-  ok "Config written to ${CONFIG_FILE}"
+    echo "==> Config written to $CONFIG_DIR/lspd.yaml"
 else
-  ok "Config already exists at ${CONFIG_FILE} (skipped)"
+    echo "==> Config already exists at $CONFIG_DIR/lspd.yaml (preserved)"
 fi
 
-# ── 4. Merge hooks into settings.json ────────────────────────────────
-info "Merging hooks into settings.json..."
+# Merge hooks into settings.json
+echo "==> Merging hooks into settings..."
 
-# Ensure ~/.factory exists
-mkdir -p "$(dirname "$SETTINGS_FILE")"
-
-# Back up before modifying
-if [ -f "$SETTINGS_FILE" ]; then
-  cp "$SETTINGS_FILE" "${SETTINGS_FILE}.bak"
-  ok "Backed up settings.json to settings.json.bak"
+if [ ! -f "$SETTINGS_FILE" ]; then
+    echo '{}' > "$SETTINGS_FILE"
 fi
 
-# Use python3 for safe JSON merge (available on macOS and most Linux)
-python3 - "$SETTINGS_FILE" << 'PYEOF'
-import json, sys, os
+# Backup before modifying
+cp "$SETTINGS_FILE" "$SETTINGS_FILE.pre-lspd.bak"
 
-settings_path = sys.argv[1]
+python3 << 'PY'
+import json, os
 
-# Load existing settings or start fresh
-if os.path.isfile(settings_path):
-    with open(settings_path, "r") as f:
-        settings = json.load(f)
-else:
-    settings = {}
+settings_path = os.path.expanduser("~/.factory/settings.json")
+install_dir = os.environ.get("LSPD_INSTALL_DIR", os.path.expanduser("~/.local/bin"))
+home = os.path.expanduser("~")
 
-# ── Set ideAutoConnect ──
-settings["ideAutoConnect"] = True
+with open(settings_path) as f:
+    settings = json.load(f)
 
-# ── Define our hooks ──
+if "hooks" not in settings:
+    settings["hooks"] = {}
+if "general" not in settings:
+    settings["general"] = {}
+
+settings["general"]["ideAutoConnect"] = True
+
 lspd_hooks = {
     "SessionStart": {
         "matcher": "",
-        "hooks": [
-            {
-                "type": "command",
-                "command": "lspd-session-start",
-                "timeout": 5
-            }
-        ]
+        "hooks": [{"type": "command", "command": os.path.join(install_dir, "lspd-session-start"), "timeout": 5}]
     },
-    "PostToolUse_Read": {
+    "PostToolUse": {
         "matcher": "Read",
-        "hooks": [
-            {
-                "type": "command",
-                "command": "lsp-read-hook",
-                "timeout": 3
-            }
-        ]
+        "hooks": [{"type": "command", "command": "LSPD_SOCKET_PATH=" + os.path.join(home, ".factory/run/lspd/lspd.sock") + " " + os.path.join(install_dir, "lsp-read-hook"), "timeout": 3}]
     },
-    "SessionEnd": {
-        "matcher": "",
-        "hooks": [
-            {
-                "type": "command",
-                "command": "lspd stop --config \"$HOME\"/.factory/hooks/lsp/lspd.yaml",
-                "timeout": 2
-            }
-        ]
-    }
 }
 
-# Fingerprints to detect our hooks (for idempotency)
-our_commands = {
-    "lspd-session-start",
-    "lsp-read-hook",
-}
-our_command_prefixes = [
-    "lspd stop",
-]
+for event, new_hook in lspd_hooks.items():
+    existing = settings["hooks"].get(event, [])
+    cleaned = [g for g in existing if not any("lspd" in h.get("command", "") or "lsp-read-hook" in h.get("command", "") for h in g.get("hooks", []))]
+    cleaned.append(new_hook)
+    settings["hooks"][event] = cleaned
 
-def is_our_hook_entry(entry):
-    """Check if a hook array entry belongs to lspd."""
-    for h in entry.get("hooks", []):
-        cmd = h.get("command", "")
-        if cmd in our_commands:
-            return True
-        for prefix in our_command_prefixes:
-            if cmd.startswith(prefix):
-                return True
-        # Also match old-style paths
-        if "/lspd-session-start" in cmd or "/lsp-read-hook" in cmd or "lspd stop" in cmd:
-            return True
-    return False
-
-hooks = settings.setdefault("hooks", {})
-
-# ── SessionStart: append our hook, remove old duplicates ──
-session_start = hooks.setdefault("SessionStart", [])
-session_start[:] = [e for e in session_start if not is_our_hook_entry(e)]
-session_start.append(lspd_hooks["SessionStart"])
-
-# ── PostToolUse: append our Read hook, remove old duplicates ──
-post_tool = hooks.setdefault("PostToolUse", [])
-post_tool[:] = [e for e in post_tool if not is_our_hook_entry(e)]
-post_tool.append(lspd_hooks["PostToolUse_Read"])
-
-# ── SessionEnd: append our hook, remove old duplicates ──
-session_end = hooks.setdefault("SessionEnd", [])
-session_end[:] = [e for e in session_end if not is_our_hook_entry(e)]
-session_end.append(lspd_hooks["SessionEnd"])
-
-# Write back
 with open(settings_path, "w") as f:
     json.dump(settings, f, indent=2)
-    f.write("\n")
 
-print("Hooks merged successfully.")
-PYEOF
-
-ok "settings.json updated"
-
-# ── 5. Create runtime directories ────────────────────────────────────
-mkdir -p "${HOME}/.factory/run/lspd"
-mkdir -p "${HOME}/.factory/logs/lspd"
-mkdir -p "${HOME}/.factory/ide"
-
-# ── 6. Validate ──────────────────────────────────────────────────────
-info "Validating installation..."
-if "${BIN_DIR}/lspd" --help >/dev/null 2>&1; then
-  ok "lspd binary works"
-else
-  die "lspd binary validation failed"
-fi
-
-if "${BIN_DIR}/lsp-read-hook" --help >/dev/null 2>&1 || true; then
-  ok "lsp-read-hook binary works"
-fi
+print("    Hooks merged (ideAutoConnect: true)")
+PY
 
 echo ""
-info "Installation complete!"
-echo "    Binaries:    ${BIN_DIR}/lspd, ${BIN_DIR}/lsp-read-hook"
-echo "    Hook script: ${BIN_DIR}/lspd-session-start"
-echo "    Config:      ${CONFIG_FILE}"
-echo "    Settings:    ${SETTINGS_FILE} (hooks merged)"
+echo "Done! Run 'droid' normally — lspd starts automatically."
 echo ""
-echo "    Just run 'droid' normally — lspd starts automatically via hooks."
+echo "Update:    curl -fsSL https://github.com/$REPO/releases/latest/download/install.sh | sh"
+echo "Uninstall: curl -fsSL https://github.com/$REPO/releases/latest/download/uninstall.sh | sh"
