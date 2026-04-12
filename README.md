@@ -210,16 +210,16 @@ policy:
 
 ---
 
-## Multi-harness support
+## Harness support
 
 lspd's core is harness-agnostic. The diagnostic store, LSP pool, and MCP tools work the same regardless of which agent calls them.
 
-| Harness | Write diagnostics | Read diagnostics | How it connects |
-|---|---|---|---|
-| **Droid** | Automatic (native `fetchDiagnostics` pipeline) | Automatic (PostToolUse Read hook) | Lock file auto-discovery |
-| **Codex** | Model-initiated (MCP tool call + system prompt instruction) | PostToolUse hook on shell reads | MCP server in `config.toml` |
-| **Claude Code** | Built-in (v2.0.74+ has native LSP) | PostToolUse Read hook adds value | Lock file or MCP server |
-| **Any MCP client** | Via `getIdeDiagnostics` tool call | Via `getIdeDiagnostics` tool call | Connect to lspd's MCP endpoint |
+| Harness | Write diagnostics | Read diagnostics | Integration | Status |
+|---|---|---|---|---|
+| **[Droid](https://factory.ai)** | Automatic — native `fetchDiagnostics` pipeline | Automatic — PostToolUse Read hook | Lock file auto-discovery + hooks | **Working** |
+| **[Codex](https://github.com/openai/codex)** | MCP tool + system prompt instruction | PostToolUse hook (shell reads only — `apply_patch` doesn't fire hooks) | MCP server in `config.toml` + hooks | WIP |
+| **[Claude Code](https://claude.ai/code)** | Not needed — Claude Code v2.0.74+ has native LSP push diagnostics | Read hook can add value | N/A | Not needed |
+| **[Cline](https://github.com/cline/cline) / [Aider](https://github.com/paul-gauthier/aider) / others** | Via `getIdeDiagnostics` MCP tool call | Via `getIdeDiagnostics` MCP tool call | Register lspd as MCP server | Untested |
 
 ---
 
