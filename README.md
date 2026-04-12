@@ -2,35 +2,74 @@
 
 **Give your AI coding agent the same LSP feedback a human gets from their IDE — without needing an IDE.**
 
-`lspd` is a lightweight Go daemon that runs alongside Droid and feeds it real-time compiler diagnostics and semantic code-navigation tools through the same MCP integration seam that VS Code uses. After every file write and every file read, the agent sees what broke — the same way you see squiggly red lines the moment you stop typing.
+`lspd` is a lightweight Go daemon that feeds real-time compiler diagnostics and semantic code-navigation tools to AI coding agents. After every file write and every file read, the agent sees what broke — the same way you see squiggly red lines the moment you stop typing.
+
+Works with [Droid](https://factory.ai), [Codex](https://github.com/openai/codex), and any agent harness that supports [MCP](https://modelcontextprotocol.io) or post-tool-use hooks.
 
 ---
 
-## Why not just use VS Code with the Droid extension?
+## Install
 
-You can. If you're already working inside VS Code, Cursor, or Windsurf with the Factory extension installed, you already have this capability. The extension connects to Droid over `FACTORY_VSCODE_MCP_PORT` and provides exactly the same diagnostic injection and IDE tools that lspd provides.
+```sh
+curl -fsSL https://github.com/harshav167/lspd/releases/latest/download/install.sh | sh
+```
 
-**lspd exists for every other context:**
+That's it. Now just run your agent normally:
+
+```sh
+droid
+```
+
+The installer:
+1. Downloads `lspd` and `lsp-read-hook` binaries for your platform
+2. Writes daemon config to `~/.factory/hooks/lsp/lspd.yaml`
+3. Merges diagnostic hooks into your `~/.factory/settings.json` (non-destructive — your existing hooks are preserved)
+4. Enables IDE auto-discovery so Droid finds lspd automatically
+
+No wrapper script. No alias. No environment variables to set. lspd starts via a SessionStart hook, registers itself via a lock file at `~/.factory/ide/`, and Droid auto-discovers it — the same mechanism the VS Code extension uses.
+
+### Update
+
+```sh
+curl -fsSL https://github.com/harshav167/lspd/releases/latest/download/install.sh | sh
+```
+
+Same command. It downloads the latest binaries and overwrites the old ones. Config is preserved.
+
+### Uninstall
+
+```sh
+curl -fsSL https://github.com/harshav167/lspd/releases/latest/download/uninstall.sh | sh
+```
+
+Removes binaries, hooks, and runtime state. Your config at `~/.factory/hooks/lsp/lspd.yaml` is kept unless you pass `--purge`.
+
+---
+
+## Why not just use VS Code?
+
+You can. If you're inside VS Code, Cursor, or Windsurf with the Factory extension, you already have diagnostics. The extension and lspd use the same integration seam — they coexist without conflict.
+
+**lspd exists for everywhere else:**
 
 | Scenario | VS Code extension | lspd |
 |---|---|---|
-| Working in a terminal (iTerm2, kitty, Warp, tmux) | Not available — no GUI IDE running | Works. One Go binary, no GUI |
-| SSH into a remote server | Need VS Code Remote or tunneling | Works natively. Run lspd on the server, diagnostics flow |
-| CI/CD pipelines and automated code generation | No IDE in CI | Works. Same daemon, same feedback loop |
-| Docker containers / devcontainers without VS Code | Only if VS Code manages the container | Works. Install lspd in the container image |
-| Low-resource machines (4GB RAM servers, Raspberry Pi) | VS Code + Electron = 500MB–2GB RAM | lspd = ~20MB Go binary + language server footprint |
-| Headless droid exec / missions | Extension can't attach to headless runs | Works. Launcher wrapper sets the port before exec |
-| Air-gapped / restricted environments | Need extension marketplace access | lspd has zero external dependencies beyond language servers |
+| Terminal (iTerm2, kitty, Warp, tmux) | Not available | Works |
+| SSH into a remote server | Need VS Code Remote | Works natively |
+| CI/CD pipelines | No IDE | Works |
+| Docker containers | Only if VS Code manages them | Works |
+| Low-resource machines | VS Code = 500MB+ RAM | lspd = ~20MB binary |
+| Headless agent runs | Extension can't attach | Works |
 
-**If you work exclusively inside VS Code, you don't need lspd.** The extension does everything lspd does. lspd is for the other 50% of the time when you're in a terminal, on a server, in CI, or anywhere a GUI IDE isn't practical.
+When both VS Code and lspd are present, Droid prefers the real IDE for writes and lspd's Read hook still adds value — because Droid's `read-cli` never calls `fetchDiagnostics` regardless of which IDE is connected. The Read hook fills that gap in every scenario.
 
 ---
 
 ## What it does
 
-### 1. Diagnostic injection after every write
+### 1. Diagnostics after every write
 
-When Droid edits, creates, or patches a file, its built-in `fetchDiagnostics` pipeline calls lspd's `getIdeDiagnostics` MCP endpoint. lspd asks the running language server (gopls, pyright, typescript-language-server, rust-analyzer, or clangd) for the current diagnostics, diffs them against the pre-edit snapshot, and returns only the **new** errors and warnings. Droid formats them as a `<system-reminder>` block and attaches it to the tool result:
+When the agent edits a file, Droid's built-in `fetchDiagnostics` pipeline calls lspd. lspd queries the language server (gopls, pyright, typescript-language-server, rust-analyzer, or clangd) and returns the diagnostics. Droid diffs before vs. after and shows only the new errors:
 
 ```
 <system-reminder>
@@ -43,48 +82,40 @@ Warnings:
 </system-reminder>
 ```
 
-The agent sees this on its very next turn, in the same message as the edit result. No `go build`. No `tsc --noEmit`. No compile-error-patch-compile loop. The language server already knew about the error 200ms after the edit — lspd just makes sure the agent knows too.
+No `go build`. No `tsc --noEmit`. No compile-error-patch-compile loop.
 
-### 2. Diagnostic injection after every read (the Read hook)
+### 2. Diagnostics after every read
 
-This is something **even VS Code's extension doesn't always do**. When the agent reads a file, a PostToolUse hook fires, queries lspd's diagnostic store, and injects any known diagnostics for that file as a system message. The agent sees the errors *before it starts planning changes* — proactive awareness, not reactive discovery.
+When the agent reads a file, a PostToolUse hook queries lspd and injects known diagnostics as a system message. The agent sees errors *before it starts planning changes* — proactive awareness, not reactive discovery.
 
-This means: if you ask the agent to "read `src/api/users.ts` and tell me what's wrong," it gets the LSP diagnostics alongside the file contents, without needing to compile anything. The agent knows the file is broken before it writes a single line of code.
+### 3. Semantic navigation tools
 
-### 3. Semantic code-navigation tools
+10 LSP-powered tools the model can call directly:
 
-Because lspd is already running full LSP clients for each language, it exposes 10 semantic tools the model can call directly:
-
-| Tool | What it does | Replaces |
-|---|---|---|
-| `lspDefinition` | Jump to the definition of a symbol | Grepping for `function foo` |
-| `lspReferences` | Find every usage of a symbol across the project | `grep -r "foo" src/` |
-| `lspHover` | Get the type signature and docs for a symbol | Reading the source to infer the type |
-| `lspWorkspaceSymbol` | Fuzzy-search every symbol the language server knows | `grep -r` across the whole repo |
-| `lspDocumentSymbol` | Get the hierarchical outline of a file | Reading the whole file to understand its structure |
-| `lspCodeActions` | Get the language server's suggested fixes for an error | Guessing what import to add |
-| `lspRename` | Prepare a safe cross-file rename | Manual search-and-replace |
-| `lspFormat` | Format a file per the project's formatter config | Shelling out to `prettier`/`gofmt` |
-| `lspCallHierarchy` | "Who calls this?" / "What does this call?" | Grepping for function names |
-| `lspTypeHierarchy` | "What implements this interface?" / "What does this extend?" | Manually tracing inheritance |
-
-These are exposed as first-class MCP tools with descriptions that teach the model when to prefer them over text search. The model reaches for `lspReferences` instead of `Grep` when doing impact analysis, because the description says "the language server filters out comments, strings, and unrelated same-name identifiers."
+| Tool | Replaces |
+|---|---|
+| `lspDefinition` | Grepping for `function foo` |
+| `lspReferences` | `grep -r "foo" src/` |
+| `lspHover` | Reading source to infer the type |
+| `lspWorkspaceSymbol` | `grep -r` across the repo |
+| `lspDocumentSymbol` | Reading a file to understand its structure |
+| `lspCodeActions` | Guessing what import to add |
+| `lspRename` | Manual search-and-replace |
+| `lspFormat` | Shelling out to `prettier`/`gofmt` |
+| `lspCallHierarchy` | Grepping for function names |
+| `lspTypeHierarchy` | Manually tracing inheritance |
 
 ---
 
-## The build-fix-build-fix problem
+## The problem this solves
 
-Without inline diagnostics, AI coding agents spend an enormous fraction of their tokens and wall-clock time in this loop:
+Without inline diagnostics, AI agents spend ~40% of their build session in this loop:
 
-1. Write a file
-2. Run `go build` / `tsc` / `cargo build`
-3. Get an error
-4. Patch the file
-5. Run the compiler again
-6. Get a different error
-7. Repeat 5–15 times
+```
+write file → compile → error → patch → compile → different error → patch → compile → ...
+```
 
-From a real GPT-5.4 session building this very project:
+From a real session building this project — **eleven compile cycles** for errors that were all visible to the language server within 200ms of each edit:
 
 ```
 go build → undefined: protocol.TypeScript → patch → rebuild
@@ -94,106 +125,43 @@ go build → undefined: protocol.TypeScript → patch → rebuild
          → undefined: protocol.ErrUnknownProtocol → fix → rebuild
          → "strings" imported and not used → remove → rebuild
          → "go.lsp.dev/protocol" imported and not used → remove → rebuild
-         → type mismatch []client.typeHierarchyItem → export + alias → rebuild
-         → "go.lsp.dev/protocol" imported and not used (different file) → remove → rebuild
+         → type mismatch → export + alias → rebuild
+         → "go.lsp.dev/protocol" imported and not used → remove → rebuild
 ```
 
-**Eleven compile cycles.** Each one a round-trip through the compiler. Each one a separate tool call. Each one polluting the model's context with error output.
-
-With lspd, the same eleven errors surface as `<system-reminder>` blocks attached to the original edits — zero standalone compile cycles. The agent writes code the way you write code in an IDE: errors appear inline, you fix them while they're fresh, and you move on.
+With lspd: zero compile cycles. Each error surfaces as a `<system-reminder>` attached to the edit that caused it.
 
 ---
 
-## Quick start
-
-### Install
-
-```sh
-cd /path/to/droid-lsp
-go build -o lspd ./cmd/lspd
-go build -o lsp-read-hook ./cmd/lsp-read-hook
-./scripts/install.sh
-```
-
-This installs:
-- `~/.local/bin/lspd` — the daemon binary
-- `~/.local/bin/lsp-read-hook` — the PostToolUse Read hook binary
-- `~/.local/bin/droid-lsp` — the launcher wrapper
-- `~/.local/bin/droid-lsp-settings.json` — process-local hook settings
-- `~/.local/bin/droid-lsp-config.yaml` — dedicated daemon config
-
-### Use
-
-Instead of running `droid`, run:
-
-```sh
-droid-lsp
-```
-
-That's it. The wrapper:
-1. Starts (or reuses) the lspd daemon
-2. Exports `FACTORY_VSCODE_MCP_PORT` pointing at it
-3. Injects hook settings for Read-time diagnostics and SessionEnd cleanup
-4. Execs the real `droid` binary
-
-You're now in a normal Droid session with full LSP diagnostics and semantic tools.
-
-### Verify it works
-
-In a droid-lsp session, create a Go file with intentional errors:
-
-```go
-package main
-
-import (
-    "fmt"
-    "strings"
-)
-
-func broken() string {
-    return 123
-}
-
-func main() {
-    fmt.Println(missingName)
-}
-```
-
-After the write, you should see a `<system-reminder>` with three errors (unused import, type mismatch, undefined name). After reading the file, the Read hook should surface the same diagnostics. If both appear, lspd is working.
-
----
-
-## How it works (architecture)
+## How it works
 
 ```
-  Droid process                              lspd daemon
-  ┌──────────────┐                          ┌──────────────────────┐
-  │ Edit/Create   │──── getIdeDiagnostics ──►│ MCP server           │
-  │ (native path) │◄── {diagnostics:[...]} ──│ (StreamableHTTP)     │
-  │               │                          │                      │
-  │ Read          │                          │ ┌──────────────────┐ │
-  │ (hook path)   │──── socket peek ────────►│ │ Diagnostic store │ │
-  │               │◄── <system-reminder> ────│ │ (per-URI,        │ │
-  │               │                          │ │  versioned)      │ │
-  │ lspDefinition │──── MCP tool call ──────►│ └────────┬─────────┘ │
-  │ lspReferences │◄── {definitions:[...]} ──│          │           │
-  │ lspHover      │                          │     publishDiag.     │
-  │ ...           │                          │          │           │
-  └──────────────┘                          │ ┌────────┴─────────┐ │
-                                            │ │ LSP client pool  │ │
-                                            │ │ ts│py│go│rs│cpp  │ │
-                                            │ └──┬──┬──┬──┬──┬───┘ │
-                                            └────┼──┼──┼──┼──┼────┘
-                                                 │  │  │  │  │
-                                            tsserver pyright gopls
-                                            (stdio)  (stdio) (stdio)
+  Agent harness (Droid / Codex / etc.)        lspd daemon
+  ┌──────────────────┐                       ┌────────────────────┐
+  │ Write/Edit/Create │── getIdeDiagnostics ─►│ MCP server         │
+  │ (native pipeline) │◄─ {diagnostics:[]} ──│ (StreamableHTTP)   │
+  │                   │                       │                    │
+  │ Read              │                       │ ┌────────────────┐ │
+  │ (PostToolUse hook)│── socket peek ───────►│ │ Diagnostic     │ │
+  │                   │◄─ <system-reminder> ──│ │ store          │ │
+  │                   │                       │ └───────┬────────┘ │
+  │ lspDefinition     │── MCP tool call ─────►│         │          │
+  │ lspReferences     │◄─ {locations:[]} ────│    publishDiag.    │
+  │ lspHover, etc.    │                       │         │          │
+  └──────────────────┘                       │ ┌───────┴────────┐ │
+                                              │ │ LSP pool       │ │
+                                              │ │ ts py go rs cc │ │
+                                              │ └────────────────┘ │
+                                              └────────────────────┘
 ```
 
-**Write path (native):** Droid's `edit-cli.ts` calls `fetchDiagnostics(ideClient, filePath)` before and after every edit. `ideClient.callTool('getIdeDiagnostics', {uri})` goes to lspd over MCP. lspd asks the language server, applies policy (dedup, volume caps, severity filter), and returns. Droid diffs before/after and formats the `<system-reminder>`. No hook needed — this is Droid's built-in pipeline with lspd as the backend.
+**Discovery:** lspd writes `~/.factory/ide/<port>.lock` on startup — the same lock file format the VS Code/Cursor extension uses. Droid's `IdeContextManager` auto-discovers it. No environment variables to set.
 
-**Read path (hook):** Droid's `read-cli.ts` doesn't call `fetchDiagnostics`. The PostToolUse Read hook fills the gap: `lsp-read-hook` connects to lspd's Unix socket, peeks the diagnostic store for the read file, formats a `<system-reminder>`, and returns it as `hookSpecificOutput.additionalContext`. Droid injects it as a System message before the agent's next turn.
+**Write path:** Droid's built-in `fetchDiagnostics` calls lspd's `getIdeDiagnostics` MCP endpoint before and after each edit. Droid diffs the results and attaches new errors to the tool result.
 
-**Navigation path (MCP tools):** The model calls `lspDefinition`, `lspReferences`, etc. as native MCP tool calls. lspd routes to the right language server, issues the LSP request, and returns LLM-friendly JSON with 1-indexed line numbers and source-line previews.
+**Read path:** A PostToolUse hook runs `lsp-read-hook`, which connects to lspd's Unix socket, peeks the diagnostic store, and injects a `<system-reminder>` via `hookSpecificOutput.additionalContext`.
+
+**Coexistence:** When VS Code/Cursor is connected, Droid prefers the real IDE for writes (detected via `preferredIdeName` matching). lspd only handles writes when no IDE is present. The Read hook runs in all scenarios.
 
 ---
 
@@ -201,165 +169,106 @@ After the write, you should see a `<system-reminder>` with three errors (unused 
 
 | Language | Server | Extensions |
 |---|---|---|
-| TypeScript / JavaScript | `typescript-language-server` | `.ts`, `.tsx`, `.js`, `.jsx`, `.mts`, `.cts` |
+| TypeScript / JavaScript | `typescript-language-server` | `.ts` `.tsx` `.js` `.jsx` `.mts` `.cts` |
 | Python | `pyright-langserver` | `.py` |
 | Go | `gopls` | `.go` |
 | Rust | `rust-analyzer` | `.rs` |
-| C / C++ | `clangd` | `.c`, `.cc`, `.cpp`, `.cxx`, `.h`, `.hpp`, `.hxx` |
+| C / C++ | `clangd` | `.c` `.cc` `.cpp` `.cxx` `.h` `.hpp` `.hxx` |
 
-Language servers are spawned lazily on first file touch. Adding a new language is a YAML config entry — no code change needed. See `examples/lspd.yaml` for the full config schema.
+Language servers are spawned lazily on first file touch. Adding a language is a config entry:
+
+```yaml
+# ~/.factory/hooks/lsp/lspd.yaml
+languages:
+  ruby:
+    command: solargraph
+    args: [stdio]
+    extensions: [.rb]
+    root_markers: [Gemfile]
+```
 
 ---
 
 ## Configuration
 
-Default config lives at `~/.local/bin/droid-lsp-config.yaml` (installed by `install.sh`). Per-project overrides go in `<project>/.factory/lsp/lspd.yaml`.
-
-Key fields:
+Config lives at `~/.factory/hooks/lsp/lspd.yaml`. Per-project overrides go in `<project>/.factory/lsp/lspd.yaml`.
 
 ```yaml
-# Runtime paths
-run_dir: ~/.factory/run/droid-lsp
-log_file: ~/.factory/logs/droid-lsp/lspd.log
+run_dir: ~/.factory/run/lspd
+log_file: ~/.factory/logs/lspd/lspd.log
 socket:
-  path: ~/.factory/run/droid-lsp/lspd.sock
+  path: ~/.factory/run/lspd/lspd.sock
 
-# Policy (controls what diagnostics the agent sees)
 policy:
-  min_severity: warning        # drop info/hint by default
+  min_severity: warning          # drop info/hint
   max_diagnostics_per_file: 20
   max_diagnostics_per_turn: 50
-  dedupe_scope: session        # same error shown once per session
-  attach_code_actions: true    # show quick-fix previews alongside errors
+  attach_code_actions: true      # show quick-fix previews with errors
   source_denylist:
-    - eslint-plugin-import     # known noisy source
-
-# Per-language overrides
-languages:
-  python:
-    command: basedpyright-langserver  # swap pyright for basedpyright
-    args: [--stdio]
+    - eslint-plugin-import       # suppress noisy sources
 ```
 
 ---
 
-## When to use lspd vs. VS Code extension
+## Multi-harness support
 
-| | lspd | VS Code + Factory extension |
-|---|---|---|
-| Best for | Terminal, SSH, CI, headless, resource-constrained | Interactive development with a GUI |
-| Diagnostic injection | ✅ after every Edit/Create/Read | ✅ after every Edit/Create (Read may vary) |
-| Semantic navigation tools | ✅ 10 MCP tools | ✅ (via extension's IDE integration) |
-| Resource usage | ~20MB binary + language servers | VS Code (~500MB) + extension + language servers |
-| Setup | `./scripts/install.sh` + run `droid-lsp` | Install VS Code + install extension |
-| Works without GUI | ✅ | ❌ |
-| Works in CI/automation | ✅ | ❌ (no interactive GUI) |
-| Works over SSH | ✅ | Only with VS Code Remote |
-| Per-project language server config | YAML file | VS Code settings.json |
+lspd's core is harness-agnostic. The diagnostic store, LSP pool, and MCP tools work the same regardless of which agent calls them.
 
-**Use VS Code** when you want the full IDE experience alongside Droid.
-**Use lspd** when you want Droid to have IDE-grade feedback without the IDE.
+| Harness | Write diagnostics | Read diagnostics | How it connects |
+|---|---|---|---|
+| **Droid** | Automatic (native `fetchDiagnostics` pipeline) | Automatic (PostToolUse Read hook) | Lock file auto-discovery |
+| **Codex** | Model-initiated (MCP tool call + system prompt instruction) | PostToolUse hook on shell reads | MCP server in `config.toml` |
+| **Claude Code** | Built-in (v2.0.74+ has native LSP) | PostToolUse Read hook adds value | Lock file or MCP server |
+| **Any MCP client** | Via `getIdeDiagnostics` tool call | Via `getIdeDiagnostics` tool call | Connect to lspd's MCP endpoint |
 
 ---
 
-## CLI reference
+## Competitive landscape
+
+No existing project combines automatic push diagnostics, a policy layer, semantic navigation, and multi-harness integration.
+
+| Capability | [Serena](https://github.com/oraios/serena) (22.8k stars) | [mcp-language-server](https://github.com/isaacphi/mcp-language-server) (1.5k) | [mcpls](https://github.com/bug-ops/mcpls) (32) | Claude Code native | **lspd** |
+|---|---|---|---|---|---|
+| Auto diagnostics after writes | ❌ | ❌ | ❌ | ✅ | ✅ |
+| Auto diagnostics after reads | ❌ | ❌ | ❌ | ❌ | ✅ |
+| Pull diagnostics on demand | ❌ | ✅ | ✅ | ✅ | ✅ |
+| Policy layer (dedup/volume/severity) | ❌ | ❌ | ❌ | Partial | ✅ |
+| Semantic navigation | ✅ (richer) | ✅ | ✅ | ✅ | ✅ |
+| Multi-harness | ❌ | Agnostic | ❌ | Claude Code only | ✅ |
+| Language count | 40+ | 5 | 30+ | Configurable | 5 (extensible) |
+
+**Complements Serena:** Serena handles symbol navigation, lspd handles diagnostics. Run both — no conflict.
+
+**Replaces mcp-language-server/cclsp** for the diagnostic use case — push instead of pull, with policy to prevent noise.
+
+**Unnecessary with Claude Code native LSP** — Claude Code already has push diagnostics. lspd targets contexts where that isn't available.
+
+See also: [Codex CLI issue #8745](https://github.com/openai/codex/issues/8745) — open request for this exact capability.
+
+---
+
+## CLI
 
 | Command | Purpose |
 |---|---|
-| `lspd start [--foreground] [--config PATH]` | Start the daemon (daemonizes unless `--foreground`) |
-| `lspd stop [--config PATH]` | Stop the daemon gracefully |
-| `lspd status [--json] [--config PATH]` | Show daemon state, language servers, sessions |
-| `lspd reload [--config PATH]` | Hot-reload config (also triggered by `kill -HUP $PID`) |
+| `lspd start [--foreground] [--config PATH]` | Start the daemon |
+| `lspd stop [--config PATH]` | Stop gracefully |
+| `lspd status [--json] [--config PATH]` | Show state |
+| `lspd reload [--config PATH]` | Hot-reload config (also `kill -HUP $PID`) |
 | `lspd ping [--config PATH]` | Liveness check |
-| `lspd diag PATH` | Print current diagnostics for a file (debugging) |
-| `lspd fix PATH:LINE` | Print available code actions at a position (debugging) |
-| `lspd logs [--follow]` | Tail the structured log file |
+| `lspd diag PATH` | Print diagnostics for a file |
+| `lspd fix PATH:LINE` | Print code actions at a position |
 
 ---
 
 ## Development
 
 ```sh
-# Build
 go build ./...
-
-# Test (unit + e2e)
-go test -race ./...
-
-# Test (integration — requires language servers installed)
-go test -race -tags integration ./test/integration/...
-
-# Lint
 go vet ./...
+go test -race ./...
+go test -race -tags integration ./test/integration/...  # requires language servers
 ```
-
-See [PLAN.md](./PLAN.md) for the full architecture, implementation plan, and design decisions.
-
----
-
-## Why this project exists — the competitive landscape
-
-There are roughly a dozen projects in the "LSP for AI coding agents" space. None of them do what this project does. The field splits into two camps, and this project bridges the gap between them.
-
-### Camp 1: Navigation only — no diagnostics
-
-| Project | Stars | Languages | What it does | What it doesn't do |
-|---|---|---|---|---|
-| [Serena](https://github.com/oraios/serena) | 22.8k | 40+ | Symbol-level navigation and editing via MCP — find symbols, references, rename, replace symbol body, call hierarchy. The most popular tool in this space by far. | **Zero diagnostic capability.** Every language server wrapper deliberately discards `publishDiagnostics` notifications. Agents using Serena can navigate code semantically but have no idea if it compiles. |
-
-Serena is excellent at what it does. If you need symbol-level code navigation for your agent, use Serena. But Serena won't tell your agent that it just introduced a type error, a missing import, or an undefined variable — and that's the class of feedback that eliminates the build-fix-build-fix loop.
-
-### Camp 2: Pull diagnostics — agent must ask
-
-| Project | Stars | Languages | Diagnostics | Navigation | Key limitation |
-|---|---|---|---|---|---|
-| [mcp-language-server](https://github.com/isaacphi/mcp-language-server) | 1.5k | Go, Rust, Python, TS, C/C++ | Pull only — `diagnostics` tool | definition, references, hover, rename | Agent must explicitly call the diagnostic tool after every edit. If it forgets, errors go unnoticed. One LSP server per run. |
-| [cclsp](https://github.com/ktnyt/cclsp) | 609 | TS, Go, Rust, Python, C++, Java, Ruby, PHP | Pull only — `get_diagnostics` tool | find_definition, find_references, rename | Same — agent must ask. No dedup, no volume caps, no severity filtering. |
-| [mcpls](https://github.com/bug-ops/mcpls) | 32 | 30+ (Rust, Python, TS, Go, C/C++, Java, Zig) | Both pull and cached — `get_diagnostics` + `get_cached_diagnostics` | hover, definition, references, completions, rename, call hierarchy, format | Closest architectural twin to this project. Rust binary, multiple concurrent LSP clients. But no harness integration — the agent still has to call the tool. No automatic injection. No policy layer. |
-| [lsp-mcp](https://github.com/Tritlo/lsp-mcp) | 119 | Haskell, TS, any LSP via config | Subscription-based — `lsp-diagnostics://` resource | get_info_on_location, completions, code_actions | Requires explicit `open_document` before diagnostics work. Haskell-first audience. |
-
-These tools give agents access to diagnostics, but the agent has to remember to ask after every edit. If it doesn't — and models frequently don't — errors accumulate silently until the next `go build` or `tsc` invocation, and you're back in the compile-error-patch-compile loop.
-
-### What's missing from both camps
-
-No existing project combines:
-
-1. **Automatic push-style diagnostic injection** — errors surface after every write and every read without the agent asking
-2. **A policy layer** — session-scoped dedup (same error shown once), per-file volume caps (max 20), per-turn volume caps (max 50), severity filtering (drop info/hint), source denylist (suppress noisy linters)
-3. **Semantic navigation tools** — definition, references, hover, workspace symbol, document symbol, code actions, rename, format, call hierarchy, type hierarchy
-4. **Multi-harness integration** — works with Droid (native IDE seam + hooks), Codex (hooks + MCP), and any MCP-compatible agent
-
-This project fills that gap. It's a single daemon that runs your language servers, collects their diagnostics, applies policy to prevent context pollution, and delivers errors to the agent before the agent's next decision — the same feedback loop a human gets from their IDE, running headlessly for any AI coding agent.
-
-### Where this fits alongside existing tools
-
-**This project complements Serena.** If you already use Serena for symbol navigation, this project adds the diagnostic half that Serena deliberately doesn't provide. Run both — Serena handles your `find_symbol` and `rename_symbol` calls, this project handles your "what errors did I just introduce?" feedback. They use separate LSP server instances so there's no conflict.
-
-**This project replaces mcp-language-server / cclsp for the diagnostic use case** — same capability but automatic (push) instead of manual (pull), with the policy layer that prevents diagnostic noise from flooding the agent's context in large codebases.
-
-**This project is unnecessary if you use Claude Code with its native LSP** (v2.0.74+). Claude Code already has built-in push diagnostics after writes. This project targets the contexts where Claude Code's native LSP isn't available: terminal sessions, Droid, Codex, SSH, CI/CD, headless automation, or any agent harness that doesn't have its own LSP integration.
-
-### The demand is real
-
-- [Codex CLI issue #8745](https://github.com/openai/codex/issues/8745) (January 2026) — open request for exactly this capability: LSP integration with a fix-loop. Three months, no implementation.
-- [Amazon Kiro](https://kiro.dev/blog/empowering-kiro-with-ide-diagnostics/) reported 29% reduction in command executions after adding IDE diagnostics to their agentic workflow — but Kiro is a proprietary IDE, not an open tool.
-- Every coding agent that runs in a terminal without an IDE faces the same build-fix-build-fix loop this project eliminates.
-
-### Comparison matrix
-
-| Capability | Serena | mcp-language-server | cclsp | mcpls | Claude Code native | **This project** |
-|---|---|---|---|---|---|---|
-| Push diagnostics (auto after writes) | ❌ | ❌ | ❌ | ❌ | ✅ | ✅ |
-| Push diagnostics (auto after reads) | ❌ | ❌ | ❌ | ❌ | ❌ | ✅ |
-| Pull diagnostics (on demand) | ❌ | ✅ | ✅ | ✅ | ✅ | ✅ |
-| Policy layer (dedup/volume/severity) | ❌ | ❌ | ❌ | ❌ | Partial | ✅ |
-| Code action preview with errors | ❌ | ❌ | ❌ | Partial | ❌ | ✅ |
-| Semantic navigation (def/refs/hover) | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
-| Symbol-level editing (replace body) | ✅ | ❌ | ❌ | ❌ | ❌ | ❌ |
-| Multi-harness (Droid/Codex/Claude Code) | ❌ | Agnostic but no hooks | ❌ | ❌ | Claude Code only | ✅ |
-| Works without GUI IDE | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
-| Language count | 40+ | 5 | 8 | 30+ | Configurable | 5 (extensible via YAML) |
-| Stars | 22.8k | 1.5k | 609 | 32 | N/A (built-in) | New |
 
 ---
 
