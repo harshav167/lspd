@@ -4,7 +4,7 @@
 
 `lspd` is a lightweight Go daemon that feeds real-time compiler diagnostics and semantic code-navigation tools to AI coding agents. After every file write and every file read, the agent sees what broke — the same way you see squiggly red lines the moment you stop typing.
 
-Works with [Droid](https://factory.ai), [Codex](https://github.com/openai/codex), and any agent harness that supports [MCP](https://modelcontextprotocol.io) or post-tool-use hooks.
+Currently supports [Droid](https://factory.ai) with full automatic diagnostic injection. [Codex](https://github.com/openai/codex) support is in progress. Compatible with any agent harness that supports [MCP](https://modelcontextprotocol.io) or post-tool-use hooks.
 
 ---
 
