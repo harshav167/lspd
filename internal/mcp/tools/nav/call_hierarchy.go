@@ -15,13 +15,38 @@ type callHierarchyArgs struct {
 }
 
 type callHierarchyResponse struct {
-	Item     []protocol.CallHierarchyItem         `json:"item"`
-	Incoming []protocol.CallHierarchyIncomingCall `json:"incoming,omitempty"`
-	Outgoing []protocol.CallHierarchyOutgoingCall `json:"outgoing,omitempty"`
+	Item      *callHierarchyItemSummary `json:"item,omitempty"`
+	Direction string                    `json:"direction"`
+	Calls     []callHierarchyEdge       `json:"calls,omitempty"`
+}
+
+type callHierarchyItemSummary struct {
+	Name   string `json:"name"`
+	Kind   string `json:"kind"`
+	Detail string `json:"detail,omitempty"`
+	Path   string `json:"path"`
+	Line   int    `json:"line"`
+	Column int    `json:"column"`
+}
+
+type callHierarchyEdge struct {
+	From      *callHierarchyItemSummary `json:"from,omitempty"`
+	To        *callHierarchyItemSummary `json:"to,omitempty"`
+	CallSites []callHierarchySite       `json:"call_sites"`
+}
+
+type callHierarchySite struct {
+	Path   string `json:"path"`
+	Line   int    `json:"line"`
+	Column int    `json:"column"`
 }
 
 func callHierarchyHandler(deps Dependencies) func(context.Context, sdkmcp.CallToolRequest, callHierarchyArgs) (*sdkmcp.CallToolResult, error) {
 	return func(ctx context.Context, _ sdkmcp.CallToolRequest, args callHierarchyArgs) (*sdkmcp.CallToolResult, error) {
+		recordToolRequest(deps, "lspCallHierarchy")
+		if args.Direction != "incoming" && args.Direction != "outgoing" {
+			return sdkmcp.NewToolResultError("direction must be either \"incoming\" or \"outgoing\""), nil
+		}
 		manager, _, err := deps.Router.Resolve(ctx, args.Path)
 		if err != nil {
 			return sdkmcp.NewToolResultError(err.Error()), nil
@@ -30,29 +55,82 @@ func callHierarchyHandler(deps Dependencies) func(context.Context, sdkmcp.CallTo
 			return sdkmcp.NewToolResultError(err.Error()), nil
 		}
 		items, err := manager.PrepareCallHierarchy(ctx, &protocol.CallHierarchyPrepareParams{TextDocumentPositionParams: protocol.TextDocumentPositionParams{
-			TextDocument: protocol.TextDocumentIdentifier{URI: protocol.DocumentURI("file://" + args.Path)},
+			TextDocument: protocol.TextDocumentIdentifier{URI: documentURI(args.Path)},
 			Position:     protocol.Position{Line: uint32(max(args.Line-1, 0)), Character: uint32(max(args.Character-1, 0))},
 		}})
 		if err != nil {
 			return sdkmcp.NewToolResultError(err.Error()), nil
 		}
-		response := callHierarchyResponse{Item: items}
+		response := callHierarchyResponse{Direction: args.Direction}
 		if len(items) == 0 {
 			return responseJSON(response)
 		}
+		item := summarizeCallHierarchyItem(items[0])
+		response.Item = &item
 		if args.Direction == "incoming" {
 			incoming, incomingErr := manager.IncomingCalls(ctx, &protocol.CallHierarchyIncomingCallsParams{Item: items[0]})
 			if incomingErr != nil {
 				return sdkmcp.NewToolResultError(incomingErr.Error()), nil
 			}
-			response.Incoming = incoming
+			response.Calls = summarizeIncomingCalls(incoming)
 		} else {
 			outgoing, outgoingErr := manager.OutgoingCalls(ctx, &protocol.CallHierarchyOutgoingCallsParams{Item: items[0]})
 			if outgoingErr != nil {
 				return sdkmcp.NewToolResultError(outgoingErr.Error()), nil
 			}
-			response.Outgoing = outgoing
+			response.Calls = summarizeOutgoingCalls(items[0], outgoing)
 		}
 		return responseJSON(response)
 	}
+}
+
+func summarizeCallHierarchyItem(item protocol.CallHierarchyItem) callHierarchyItemSummary {
+	return callHierarchyItemSummary{
+		Name:   item.Name,
+		Kind:   symbolKindName(item.Kind),
+		Detail: item.Detail,
+		Path:   pathFromURI(string(item.URI)),
+		Line:   int(item.Range.Start.Line) + 1,
+		Column: int(item.Range.Start.Character) + 1,
+	}
+}
+
+func summarizeIncomingCalls(calls []protocol.CallHierarchyIncomingCall) []callHierarchyEdge {
+	out := make([]callHierarchyEdge, 0, len(calls))
+	for _, call := range calls {
+		edge := callHierarchyEdge{
+			From: pointerToCallHierarchyItemSummary(summarizeCallHierarchyItem(call.From)),
+		}
+		for _, site := range call.FromRanges {
+			edge.CallSites = append(edge.CallSites, callHierarchySite{
+				Path:   pathFromURI(string(call.From.URI)),
+				Line:   int(site.Start.Line) + 1,
+				Column: int(site.Start.Character) + 1,
+			})
+		}
+		out = append(out, edge)
+	}
+	return out
+}
+
+func summarizeOutgoingCalls(source protocol.CallHierarchyItem, calls []protocol.CallHierarchyOutgoingCall) []callHierarchyEdge {
+	out := make([]callHierarchyEdge, 0, len(calls))
+	for _, call := range calls {
+		edge := callHierarchyEdge{
+			To: pointerToCallHierarchyItemSummary(summarizeCallHierarchyItem(call.To)),
+		}
+		for _, site := range call.FromRanges {
+			edge.CallSites = append(edge.CallSites, callHierarchySite{
+				Path:   pathFromURI(string(source.URI)),
+				Line:   int(site.Start.Line) + 1,
+				Column: int(site.Start.Character) + 1,
+			})
+		}
+		out = append(out, edge)
+	}
+	return out
+}
+
+func pointerToCallHierarchyItemSummary(item callHierarchyItemSummary) *callHierarchyItemSummary {
+	return &item
 }

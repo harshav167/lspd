@@ -4,6 +4,7 @@ import (
 	"context"
 
 	sdkmcp "github.com/mark3labs/mcp-go/mcp"
+	"go.lsp.dev/protocol"
 )
 
 type typeHierarchyArgs struct {
@@ -14,11 +15,26 @@ type typeHierarchyArgs struct {
 }
 
 type typeHierarchyResponse struct {
-	Items []typeHierarchyItem `json:"items"`
+	Item      *typeHierarchySummary  `json:"item,omitempty"`
+	Direction string                 `json:"direction"`
+	Types     []typeHierarchySummary `json:"types"`
+}
+
+type typeHierarchySummary struct {
+	Name   string `json:"name"`
+	Kind   string `json:"kind"`
+	Detail string `json:"detail,omitempty"`
+	Path   string `json:"path"`
+	Line   int    `json:"line"`
+	Column int    `json:"column"`
 }
 
 func typeHierarchyHandler(deps Dependencies) func(context.Context, sdkmcp.CallToolRequest, typeHierarchyArgs) (*sdkmcp.CallToolResult, error) {
 	return func(ctx context.Context, _ sdkmcp.CallToolRequest, args typeHierarchyArgs) (*sdkmcp.CallToolResult, error) {
+		recordToolRequest(deps, "lspTypeHierarchy")
+		if args.Direction != "super" && args.Direction != "sub" {
+			return sdkmcp.NewToolResultError("direction must be either \"super\" or \"sub\""), nil
+		}
 		manager, _, err := deps.Router.Resolve(ctx, args.Path)
 		if err != nil {
 			return sdkmcp.NewToolResultError(err.Error()), nil
@@ -27,7 +43,7 @@ func typeHierarchyHandler(deps Dependencies) func(context.Context, sdkmcp.CallTo
 			return sdkmcp.NewToolResultError(err.Error()), nil
 		}
 		items, err := manager.PrepareTypeHierarchy(ctx, map[string]any{
-			"textDocument": map[string]any{"uri": "file://" + args.Path},
+			"textDocument": map[string]any{"uri": documentURI(args.Path)},
 			"position": map[string]any{
 				"line":      max(args.Line-1, 0),
 				"character": max(args.Character-1, 0),
@@ -36,9 +52,12 @@ func typeHierarchyHandler(deps Dependencies) func(context.Context, sdkmcp.CallTo
 		if err != nil {
 			return sdkmcp.NewToolResultError(err.Error()), nil
 		}
+		response := typeHierarchyResponse{Direction: args.Direction, Types: []typeHierarchySummary{}}
 		if len(items) == 0 {
-			return responseJSON(typeHierarchyResponse{})
+			return responseJSON(response)
 		}
+		item := summarizeTypeHierarchyItem(items[0])
+		response.Item = &item
 		if args.Direction == "super" {
 			items, err = manager.Supertypes(ctx, items[0])
 		} else {
@@ -47,6 +66,22 @@ func typeHierarchyHandler(deps Dependencies) func(context.Context, sdkmcp.CallTo
 		if err != nil {
 			return sdkmcp.NewToolResultError(err.Error()), nil
 		}
-		return responseJSON(typeHierarchyResponse{Items: items})
+		summaries := make([]typeHierarchySummary, 0, len(items))
+		for _, item := range items {
+			summaries = append(summaries, summarizeTypeHierarchyItem(item))
+		}
+		response.Types = summaries
+		return responseJSON(response)
+	}
+}
+
+func summarizeTypeHierarchyItem(item typeHierarchyItem) typeHierarchySummary {
+	return typeHierarchySummary{
+		Name:   item.Name,
+		Kind:   symbolKindName(protocol.SymbolKind(item.Kind)),
+		Detail: item.Detail,
+		Path:   pathFromURI(item.URI),
+		Line:   int(item.Range.Start.Line) + 1,
+		Column: int(item.Range.Start.Character) + 1,
 	}
 }

@@ -3,6 +3,7 @@ package client
 import (
 	"context"
 	"path/filepath"
+	"time"
 
 	"go.lsp.dev/protocol"
 )
@@ -48,7 +49,22 @@ func (m *Manager) initialize(ctx context.Context) error {
 			return err
 		}
 	}
+	if m.cfg.Warmup {
+		go m.warmup()
+	}
 	return nil
+}
+
+func (m *Manager) warmup() {
+	timeout := m.requestTimeout
+	if timeout < 10*time.Second {
+		timeout = 10 * time.Second
+	}
+	ctx, cancel := context.WithTimeout(m.runCtx, timeout)
+	defer cancel()
+	if _, err := m.server.Symbols(ctx, &protocol.WorkspaceSymbolParams{Query: ""}); err != nil && ctx.Err() == nil {
+		m.logger.Debug("lsp warmup failed", "language", m.cfg.Name, "root", m.root, "error", err)
+	}
 }
 
 func pathToURI(path string) protocol.DocumentURI {

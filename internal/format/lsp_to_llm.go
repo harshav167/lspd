@@ -5,6 +5,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -14,8 +15,8 @@ import (
 
 // Position is the 1-indexed tool surface position.
 type Position struct {
-	Line      int `json:"line"`
-	Character int `json:"character"`
+	Line   int `json:"line"`
+	Column int `json:"column"`
 }
 
 // Range is the 1-indexed tool surface range.
@@ -35,12 +36,12 @@ type IdeDiagnostic struct {
 
 // Location is an LLM-friendly source location.
 type Location struct {
-	Path         string `json:"path"`
-	Line         int    `json:"line"`
-	Character    int    `json:"character"`
-	EndLine      int    `json:"end_line,omitempty"`
-	EndCharacter int    `json:"end_character,omitempty"`
-	Preview      string `json:"preview,omitempty"`
+	Path      string `json:"path"`
+	Line      int    `json:"line"`
+	Column    int    `json:"column"`
+	EndLine   int    `json:"end_line,omitempty"`
+	EndColumn int    `json:"end_column,omitempty"`
+	Preview   string `json:"preview,omitempty"`
 }
 
 // ToIdeDiagnostics converts LSP diagnostics to Droid diagnostics.
@@ -82,7 +83,7 @@ func marshalCode(code any) json.RawMessage {
 func Fingerprint(path string, diagnostic protocol.Diagnostic) string {
 	if !strings.Contains(path, "://") {
 		if abs, err := filepath.Abs(path); err == nil {
-			path = "file://" + filepath.ToSlash(abs)
+			path = (&url.URL{Scheme: "file", Path: filepath.ToSlash(abs)}).String()
 		}
 	}
 	digest := sha256.Sum256([]byte(fmt.Sprintf("%s|%d|%d|%v|%s|%s", path, diagnostic.Range.Start.Line, diagnostic.Range.Start.Character, diagnostic.Code, diagnostic.Source, diagnostic.Message)))

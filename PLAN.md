@@ -843,6 +843,101 @@ func Serve(ctx context.Context, s *server.MCPServer, addr string) error {
 
 The MCP server binds to `127.0.0.1:0` (any free port), captures the chosen port, writes it to `~/.factory/run/lspd.port`, and prints it to stdout for the launcher wrapper to capture.
 
+### 6.1.1 IDE lock file auto-discovery (PRIMARY integration path)
+
+Droid auto-discovers IDE instances via lock files in `~/.factory/ide/`. This is how the VS Code, Cursor, and Windsurf extensions register themselves with Droid — and it's how `lspd` registers too. No wrapper script, no `FACTORY_VSCODE_MCP_PORT` env var, no `CLAUDE_ENV_FILE` injection needed.
+
+**How it works (Droid source: `src/services/IdeContextManager.ts:95-130` + `src/utils/ide-lock-files.ts`):**
+
+1. `IdeContextManager.initialize()` checks three paths in priority order:
+   - Priority 1: `FACTORY_VSCODE_MCP_PORT` env var (for explicit port override)
+   - Priority 2: `FACTORY_JETBRAINS_MCP_PORT` env var (for JetBrains)
+   - Priority 3: **Lock file auto-discovery** (for everything else, including lspd)
+
+2. For Priority 3, Droid reads all `*.lock` files in `~/.factory/ide/`, parses the JSON, checks if the PID is alive, and matches `workspaceFolders` against the current `cwd`. If a match is found, it connects to the port in the lock file.
+
+3. Auto-discovery runs if either:
+   - Droid is running inside an IDE terminal (detected by `ideDetector`), OR
+   - The `ideAutoConnect` setting is `true` (defaults to `false` — installer must enable it)
+
+**Lock file format (matches Droid's `IdeLockFileData` interface):**
+
+```
+~/.factory/ide/<port>.lock
+```
+
+```json
+{
+  "pid": 12345,
+  "ideName": "lspd",
+  "workspaceFolders": ["/"]
+}
+```
+
+Using `"/"` as the workspace means lspd matches any `cwd`. When the user is inside an IDE terminal (Cursor/VS Code), Droid's `findMatchingIdeInstance` prefers the IDE's lock file via `preferredIdeName` matching, so lspd only wins in plain terminals — which is exactly the headless case lspd exists for.
+
+**What lspd does:**
+
+- On startup (`daemon.App.Start`): writes `~/.factory/ide/<port>.lock` with its PID, `"lspd"` as the IDE name, and `["/"]` as workspace folders.
+- On shutdown (`daemon.App.Close`): removes the lock file.
+- Stale lock files (PID no longer running) are automatically cleaned up by Droid's `discoverRunningIdeInstances`.
+
+**Coexistence with VS Code / Cursor:**
+
+| Scenario | What happens |
+|---|---|
+| Plain terminal, no IDE open | lspd's lock file is the only match → Droid connects to lspd |
+| Inside Cursor's terminal | Cursor's lock file is preferred (`preferredIdeName` matches) → Droid connects to Cursor. lspd's lock file exists but is not chosen |
+| Plain terminal, Cursor open in background | Both lock files exist, no preference → first match wins (either works) |
+| VS Code with Droid extension | VS Code's lock file is preferred → lspd not used for writes, Read hook still adds value |
+
+**Installer requirement:** set `ideAutoConnect: true` in `~/.factory/settings.json`:
+
+```json
+{
+  "general": {
+    "ideAutoConnect": true
+  }
+}
+```
+
+This is the only settings change needed for the lock file path to work. Without it, Droid only auto-discovers lock files when running inside an IDE terminal.
+
+### 6.1.2 Transport connection persistence (CRITICAL)
+
+The MCP StreamableHTTP connection between Droid's `VSCodeIdeClient` and `lspd` must stay alive for the entire Droid session. If it drops, Droid marks the IDE as disconnected (red indicator) and there is no automatic reconnect on Droid's side — the session loses all diagnostic injection and tier-2 tool access until a fresh launch.
+
+The connection can drop for three independent reasons, and all three must be addressed:
+
+**1. TCP-level idle connection closure.** The OS kernel or intermediate network stack can close TCP connections that have been idle for too long. Fix: enable TCP keep-alive on the listener socket so the OS sends periodic keep-alive probes:
+
+```go
+lc := net.ListenConfig{KeepAlive: 30 * time.Second}
+listener, err := lc.Listen(ctx, "tcp", net.JoinHostPort(host, "0"))
+```
+
+This is set on the `net.Listener` in `Server.Start()`, not on `http.Server`.
+
+**2. Application-level idle connection closure.** Droid's Node.js HTTP client (`undici` / `fetch`) has default keep-alive timeouts on its connection pool. When no MCP requests flow for 10–20 seconds (e.g., the user is reading the model's output or has stepped away), the client's connection pool may close the idle HTTP connection. The server can counteract this by sending periodic heartbeat messages over the GET/SSE channel:
+
+```go
+handler := mcpsdk.NewStreamableHTTPServer(srv,
+    mcpsdk.WithHeartbeatInterval(5 * time.Second),  // keep SSE alive
+    // ...other options...
+)
+```
+
+The heartbeat interval must be shorter than the client's idle timeout. 5 seconds is safe; 15 seconds is too slow (observed drops at ~10 seconds in testing). Note: the heartbeat only fires on the GET/SSE channel. If Droid's `StreamableHTTPClientTransport` does not establish a GET connection for server-sent events, the heartbeat has no effect and the POST channel must be kept alive via TCP keep-alive alone.
+
+**3. mcp-go session idle TTL.** The `mcp-go` library has a `WithSessionIdleTTL` option that sweeps per-session state for sessions that have been idle longer than a threshold. The default is `0` (disabled/no sweep), which is correct for `lspd` — do NOT set `WithSessionIdleTTL` to a positive value. If it's set, idle sessions get cleaned up and subsequent requests from that session fail.
+
+**Process idempotency.** Only one `lspd` instance per config path should run at a time. The `acquireLock` mechanism using `flock(2)` on `$RUN_DIR/lspd.pid` handles this, but all launcher paths (`droid-launcher.sh`, `session-start.sh`, and `lspd start`) must pass `--config` consistently so they target the same lock file. A `ping` or `start` without `--config` targets the default lock path and can spawn a second instance alongside the dedicated one. This was a confirmed production bug.
+
+**What NOT to do:**
+- Do NOT set `http.Server.IdleTimeout` or `http.Server.ReadTimeout` to anything other than 0. Any positive value will close idle connections.
+- Do NOT rely on idle timeout as the daemon lifecycle mechanism. The daemon should stay alive until explicitly stopped (via `SessionEnd` hook or `lspd stop`).
+- Do NOT assume Droid will reconnect if the connection drops. It won't. Prevention is the only strategy.
+
 ### 6.2 Tier 1: IDE compatibility tools
 
 These four tools are what Droid's `VSCodeIdeClient` actually calls. Only `getIdeDiagnostics` has real behavior; the others are stubs that return success.
@@ -1767,47 +1862,58 @@ Merging semantics: deep merge for maps, replace for lists (simplifies the mental
 
 ---
 
-## 11. Droid integration
+## 11. Droid integration — production setup
 
-Four integration points. Each has a distinct purpose; all four together give full coverage.
+### 11.0 Overview: zero-wrapper installation
 
-### 11.1 Launcher wrapper (primary path)
+The production setup requires **no wrapper script, no PATH shim, no alias**. The user runs `droid` normally. Three hooks in the user's global `~/.factory/settings.json` handle everything. Droid auto-discovers lspd via the lock file mechanism described in §6.1.1.
 
-Installed as `~/.local/bin/droid` ahead of the real `droid` in `$PATH`:
+**What the installer does (one command):**
+
+1. Installs `lspd` and `lsp-read-hook` binaries to `~/.local/bin/`
+2. Writes daemon config to `~/.factory/hooks/lsp/lspd.yaml`
+3. Merges three hooks into `~/.factory/settings.json` (non-destructive — preserves existing hooks)
+4. Sets `ideAutoConnect: true` in `~/.factory/settings.json` (enables Droid's lock file auto-discovery in plain terminals)
+
+**What the user does:**
 
 ```sh
-#!/bin/sh
-# ~/.local/bin/droid — lspd-aware launcher for Droid
+# Install (one time)
+curl -fsSL https://... | sh
+# or: ./scripts/install.sh
 
-set -eu
-
-LSPD="${LSPD_BIN:-lspd}"
-REAL_DROID="${REAL_DROID:-/Applications/Droid.app/Contents/MacOS/droid}"
-
-# Ensure lspd is running (idempotent)
-if ! "$LSPD" ping >/dev/null 2>&1; then
-    if ! "$LSPD" start --quiet; then
-        echo "[droid-launcher] warning: lspd failed to start; continuing without LSP bridge" >&2
-    fi
-fi
-
-# Export the chosen MCP port
-PORT_FILE="$HOME/.factory/run/lspd.port"
-if [ -f "$PORT_FILE" ]; then
-    FACTORY_VSCODE_MCP_PORT="$(cat "$PORT_FILE")"
-    export FACTORY_VSCODE_MCP_PORT
-fi
-
-exec "$REAL_DROID" "$@"
+# Use (every time — just run droid normally)
+droid
 ```
 
-This is the primary path because setting `FACTORY_VSCODE_MCP_PORT` *before* `exec droid` sidesteps the timing question entirely — `IdeContextManager` sees the variable at construction time.
+**What happens at session startup:**
 
-### 11.2 SessionStart hook (fallback path)
+1. Droid starts and fires the `SessionStart` hook
+2. The hook starts lspd if not already running
+3. lspd writes `~/.factory/ide/<port>.lock` (see §6.1.1)
+4. Droid's `IdeContextManager` auto-discovers the lock file and connects to lspd
+5. Write-time diagnostics flow natively via `fetchDiagnostics → getIdeDiagnostics`
+6. Read-time diagnostics flow via the PostToolUse Read hook
+7. On session end, lspd stops and removes the lock file
 
-For users who don't install the launcher wrapper. Less clean than the wrapper because of the `IdeContextManager` timing question (§18), but worth having as a fallback.
+### 11.1 Coexistence with VS Code / Cursor / Windsurf
 
-`.factory/settings.json`:
+The hooks are designed to coexist with real IDE extensions. If a real IDE is already providing the MCP endpoint, lspd steps back and lets the IDE handle writes. The Read hook still adds value in all cases.
+
+| Scenario | Write diagnostics | Read diagnostics | What happens |
+|---|---|---|---|
+| **Plain terminal, no IDE** | lspd (auto-discovered via lock file) | lspd (Read hook) | lspd does everything |
+| **Inside Cursor/VS Code terminal** | IDE extension (preferred via `preferredIdeName`) | Read hook queries lspd | IDE handles writes, Read hook adds read-time awareness the IDE doesn't provide |
+| **VS Code open but running droid in a separate terminal** | lspd or IDE (whichever lock file matches first) | Read hook | Both lock files exist; `ideAutoConnect` picks whichever matches `cwd` |
+| **IDE extension broken or not installed** | lspd (only lock file present) | lspd (Read hook) | lspd as full fallback |
+
+The Read hook is **pure additive value in every scenario** — it fills the Read gap that exists regardless of which IDE provides write-time diagnostics. Droid's `read-cli.ts` never calls `fetchDiagnostics`, so Read-time diagnostic awareness is only available through this hook.
+
+### 11.2 SessionStart hook
+
+Starts lspd if not already running. lspd writes its own lock file on startup (§6.1.1), so Droid auto-discovers it. Also emits `additionalContext` telling the model that LSP tools are available.
+
+The hook is aware of IDE coexistence: if lspd is already running (from a previous session or a manual start), it skips startup. If a real IDE is connected, lspd still starts (for Read hook coverage) but Droid prefers the real IDE for writes.
 
 ```json
 {
@@ -1817,7 +1923,7 @@ For users who don't install the launcher wrapper. Less clean than the wrapper be
         "hooks": [
           {
             "type": "command",
-            "command": "\"$FACTORY_PROJECT_DIR\"/.factory/hooks/lsp/session-start.sh",
+            "command": "lspd-session-start",
             "timeout": 5
           }
         ]
@@ -1827,45 +1933,26 @@ For users who don't install the launcher wrapper. Less clean than the wrapper be
 }
 ```
 
-`session-start.sh`:
+`lspd-session-start` (installed to `~/.local/bin/`):
 
 ```sh
 #!/bin/sh
-# Ensures lspd is up, writes FACTORY_VSCODE_MCP_PORT to $CLAUDE_ENV_FILE,
-# and warms up language servers for the current project.
-
 set -eu
 
-if ! command -v lspd >/dev/null 2>&1; then
-    exit 0
+CONFIG="${LSPD_CONFIG:-$HOME/.factory/hooks/lsp/lspd.yaml}"
+
+# Start lspd if not already running (idempotent)
+if ! lspd ping --config "$CONFIG" >/dev/null 2>&1; then
+    lspd start --config "$CONFIG" || exit 0
 fi
 
-if ! lspd ping >/dev/null 2>&1; then
-    lspd start --quiet || exit 0
-fi
-
-PORT="$(cat "$HOME/.factory/run/lspd.port" 2>/dev/null || echo '')"
-if [ -n "$PORT" ] && [ -n "${CLAUDE_ENV_FILE:-}" ]; then
-    echo "export FACTORY_VSCODE_MCP_PORT=$PORT" >> "$CLAUDE_ENV_FILE"
-fi
-
-# Async warmup hint (non-blocking)
-lspd warmup --cwd "$cwd" >/dev/null 2>&1 &
-
-# Emit a minimal SessionStart additionalContext so the model knows lspd is up
-cat <<EOF
-{
-  "hookSpecificOutput": {
-    "hookEventName": "SessionStart",
-    "additionalContext": "LSP bridge active: semantic code navigation tools (lspDefinition, lspReferences, lspHover, lspWorkspaceSymbol, lspDocumentSymbol, lspCodeActions, lspRename, lspFormat, lspCallHierarchy, lspTypeHierarchy) are available as IDE-native tools. Diagnostics are automatically injected after Read, Edit, Create, and Write."
-  }
-}
-EOF
+# Emit additionalContext so the model knows LSP tools are available
+printf '{"hookSpecificOutput":{"hookEventName":"SessionStart","additionalContext":"LSP bridge active. Diagnostics are injected after every Edit, Create, and Read. Semantic tools available: lspDefinition, lspReferences, lspHover, lspWorkspaceSymbol, lspDocumentSymbol, lspCodeActions, lspRename, lspFormat, lspCallHierarchy, lspTypeHierarchy."}}'
 ```
 
-### 11.3 PostToolUse Read hook (Read gap filler)
+### 11.3 PostToolUse Read hook (universal — runs in every scenario)
 
-`.factory/settings.json`:
+Fills the Read gap. After every `Read` tool call, queries lspd for current diagnostics on the read file and injects them as a `<system-reminder>`. This works regardless of whether lspd or a real IDE is providing write-time diagnostics.
 
 ```json
 {
@@ -1876,7 +1963,7 @@ EOF
         "hooks": [
           {
             "type": "command",
-            "command": "\"$HOME\"/.local/bin/lsp-read-hook",
+            "command": "lsp-read-hook",
             "timeout": 3
           }
         ]
@@ -1886,11 +1973,11 @@ EOF
 }
 ```
 
-`lsp-read-hook` is the Go binary from §7.4. It reads hook JSON, queries the daemon, emits `hookSpecificOutput.additionalContext`, exits 0. Always 0, never blocks Droid.
+`lsp-read-hook` is the Go binary from §7.4. Reads hook JSON from stdin, extracts `file_path`, connects to lspd's Unix socket, peeks the diagnostic store, formats as `<system-reminder>`, emits `hookSpecificOutput.additionalContext`, exits 0. Always exits 0 — never blocks Droid on daemon issues.
 
 ### 11.4 SessionEnd hook
 
-`.factory/settings.json`:
+Stops the lspd daemon when the session ends. lspd removes its lock file on shutdown, so the next session gets a clean start.
 
 ```json
 {
@@ -1900,7 +1987,7 @@ EOF
         "hooks": [
           {
             "type": "command",
-            "command": "lspd forget --session \"$session_id\"",
+            "command": "lspd stop --config \"$HOME\"/.factory/hooks/lsp/lspd.yaml",
             "timeout": 2
           }
         ]
@@ -1910,7 +1997,67 @@ EOF
 }
 ```
 
-Drops per-session dedup state. Daemon keeps running for the next session.
+### 11.5 What the merged `~/.factory/settings.json` looks like
+
+After installation, the user's settings contain (merged non-destructively with any existing hooks):
+
+```json
+{
+  "general": {
+    "ideAutoConnect": true
+  },
+  "hooks": {
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "lspd-session-start",
+            "timeout": 5
+          }
+        ]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "matcher": "Read",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "lsp-read-hook",
+            "timeout": 3
+          }
+        ]
+      }
+    ],
+    "SessionEnd": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "lspd stop --config \"$HOME\"/.factory/hooks/lsp/lspd.yaml",
+            "timeout": 2
+          }
+        ]
+      }
+    ]
+  }
+}
+```
+
+The installer must **merge** these hooks with the user's existing hooks, not replace them. If the user already has SessionStart/PostToolUse/SessionEnd hooks, lspd's hooks are appended alongside them. The installer must also be **idempotent** — running it twice doesn't duplicate the hooks.
+
+### 11.6 Legacy: the `droid-lsp` wrapper (deprecated)
+
+The `droid-lsp` wrapper script in `scripts/droid-launcher.sh` was the original integration path before lock file auto-discovery was implemented. It set `FACTORY_VSCODE_MCP_PORT` as an env var and injected `--settings` for hooks before exec'ing the real droid binary.
+
+**The wrapper is no longer the recommended path.** It remains in the repo for:
+
+- Environments where `ideAutoConnect` can't be enabled (e.g., enterprise-managed settings)
+- Testing and debugging (explicit control over which daemon to connect to)
+- Users who prefer explicit control over implicit auto-discovery
+
+For production: use the hook-based setup from §11.0. For development/debugging: `droid-lsp` wrapper is available.
 
 ---
 

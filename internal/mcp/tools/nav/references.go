@@ -2,6 +2,7 @@ package nav
 
 import (
 	"context"
+	"sort"
 
 	"github.com/harsha/lspd/internal/format"
 	sdkmcp "github.com/mark3labs/mcp-go/mcp"
@@ -23,12 +24,14 @@ type referencesByFile struct {
 type referencesResponse struct {
 	Total      int                `json:"total"`
 	Truncated  bool               `json:"truncated,omitempty"`
+	Omitted    int                `json:"omitted,omitempty"`
 	References []format.Location  `json:"references"`
 	ByFile     []referencesByFile `json:"by_file"`
 }
 
 func referencesHandler(deps Dependencies) func(context.Context, sdkmcp.CallToolRequest, referencesArgs) (*sdkmcp.CallToolResult, error) {
 	return func(ctx context.Context, _ sdkmcp.CallToolRequest, args referencesArgs) (*sdkmcp.CallToolResult, error) {
+		recordToolRequest(deps, "lspReferences")
 		manager, _, err := deps.Router.Resolve(ctx, args.Path)
 		if err != nil {
 			return sdkmcp.NewToolResultError(err.Error()), nil
@@ -38,7 +41,7 @@ func referencesHandler(deps Dependencies) func(context.Context, sdkmcp.CallToolR
 		}
 		locations, err := manager.References(ctx, &protocol.ReferenceParams{
 			TextDocumentPositionParams: protocol.TextDocumentPositionParams{
-				TextDocument: protocol.TextDocumentIdentifier{URI: protocol.DocumentURI("file://" + args.Path)},
+				TextDocument: protocol.TextDocumentIdentifier{URI: documentURI(args.Path)},
 				Position:     protocol.Position{Line: uint32(max(args.Line-1, 0)), Character: uint32(max(args.Character-1, 0))},
 			},
 			Context: protocol.ReferenceContext{IncludeDeclaration: args.IncludeDeclaration},
@@ -55,10 +58,18 @@ func referencesHandler(deps Dependencies) func(context.Context, sdkmcp.CallToolR
 				response.References = append(response.References, converted)
 			}
 		}
+		sortLocations(response.References)
 		response.Truncated = len(locations) > len(response.References)
+		response.Omitted = len(locations) - len(response.References)
 		for path, count := range byFile {
 			response.ByFile = append(response.ByFile, referencesByFile{Path: path, Count: count})
 		}
+		sort.SliceStable(response.ByFile, func(i, j int) bool {
+			if response.ByFile[i].Count != response.ByFile[j].Count {
+				return response.ByFile[i].Count > response.ByFile[j].Count
+			}
+			return response.ByFile[i].Path < response.ByFile[j].Path
+		})
 		return responseJSON(response)
 	}
 }

@@ -16,13 +16,17 @@ type renameArgs struct {
 }
 
 type renameResponse struct {
-	Path   string                  `json:"path"`
-	DryRun bool                    `json:"dry_run"`
-	Edit   *protocol.WorkspaceEdit `json:"edit,omitempty"`
+	OldName      string    `json:"old_name"`
+	NewName      string    `json:"new_name"`
+	DryRun       bool      `json:"dry_run"`
+	FilesTouched int       `json:"files_touched"`
+	TotalEdits   int       `json:"total_edits"`
+	Edit         *editPlan `json:"edit,omitempty"`
 }
 
 func renameHandler(deps Dependencies) func(context.Context, sdkmcp.CallToolRequest, renameArgs) (*sdkmcp.CallToolResult, error) {
 	return func(ctx context.Context, _ sdkmcp.CallToolRequest, args renameArgs) (*sdkmcp.CallToolResult, error) {
+		recordToolRequest(deps, "lspRename")
 		manager, _, err := deps.Router.Resolve(ctx, args.Path)
 		if err != nil {
 			return sdkmcp.NewToolResultError(err.Error()), nil
@@ -32,7 +36,7 @@ func renameHandler(deps Dependencies) func(context.Context, sdkmcp.CallToolReque
 		}
 		edit, err := manager.Rename(ctx, &protocol.RenameParams{
 			TextDocumentPositionParams: protocol.TextDocumentPositionParams{
-				TextDocument: protocol.TextDocumentIdentifier{URI: protocol.DocumentURI("file://" + args.Path)},
+				TextDocument: protocol.TextDocumentIdentifier{URI: documentURI(args.Path)},
 				Position:     protocol.Position{Line: uint32(max(args.Line-1, 0)), Character: uint32(max(args.Character-1, 0))},
 			},
 			NewName: args.NewName,
@@ -40,6 +44,15 @@ func renameHandler(deps Dependencies) func(context.Context, sdkmcp.CallToolReque
 		if err != nil {
 			return sdkmcp.NewToolResultError(err.Error()), nil
 		}
-		return responseJSON(renameResponse{Path: args.Path, DryRun: args.DryRun, Edit: edit})
+		oldName := identifierAtPosition(args.Path, args.Line, args.Character)
+		editPlan, filesTouched, totalEdits := workspaceEditSummary(edit)
+		return responseJSON(renameResponse{
+			OldName:      oldName,
+			NewName:      args.NewName,
+			DryRun:       args.DryRun,
+			FilesTouched: filesTouched,
+			TotalEdits:   totalEdits,
+			Edit:         editPlan,
+		})
 	}
 }

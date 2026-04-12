@@ -9,6 +9,7 @@ import (
 	"github.com/harsha/lspd/internal/config"
 	"github.com/harsha/lspd/internal/lsp/client"
 	"github.com/harsha/lspd/internal/lsp/store"
+	"github.com/harsha/lspd/internal/metrics"
 )
 
 // State represents current supervisor health.
@@ -26,6 +27,7 @@ type Supervisor struct {
 	root     string
 	store    *store.Store
 	logger   *slog.Logger
+	metrics  *metrics.Registry
 	mu       sync.RWMutex
 	state    State
 	lastErr  error
@@ -33,8 +35,8 @@ type Supervisor struct {
 }
 
 // New creates a supervisor.
-func New(cfg config.LanguageConfig, root string, diagnosticStore *store.Store, logger *slog.Logger) *Supervisor {
-	return &Supervisor{cfg: cfg, root: root, store: diagnosticStore, logger: logger, state: StateHealthy}
+func New(cfg config.LanguageConfig, root string, diagnosticStore *store.Store, logger *slog.Logger, metricsRegistry *metrics.Registry) *Supervisor {
+	return &Supervisor{cfg: cfg, root: root, store: diagnosticStore, logger: logger, metrics: metricsRegistry}
 }
 
 // Run waits on the manager and restarts it when it fails.
@@ -46,41 +48,10 @@ func (s *Supervisor) Run(ctx context.Context, manager *client.Manager, onReplace
 			return current, ctx.Err()
 		}
 		s.recordFailure(err)
-		if s.tooManyRestarts() {
-			s.setState(StateDegraded, err)
-			replacement, probeErr := s.probeUntilHealthy(ctx, current, onReplace)
-			if probeErr != nil {
-				return current, probeErr
-			}
-			current = replacement
-			continue
-		}
-		restarts := s.restartCount()
-		s.setState(StateRestarting, err)
-		backoff := time.Duration(restarts) * time.Second
-		if backoff > 8*time.Second {
-			backoff = 8 * time.Second
-		}
-		timer := time.NewTimer(backoff)
-		select {
-		case <-ctx.Done():
-			timer.Stop()
-			return current, ctx.Err()
-		case <-timer.C:
-		}
-		replacement, replacementErr := client.NewManager(ctx, s.cfg, s.root, s.store, s.logger)
+		replacement, replacementErr := s.restartUntilHealthy(ctx, current, onReplace)
 		if replacementErr != nil {
 			return current, replacementErr
 		}
-		for _, doc := range current.TrackedDocs() {
-			if _, openErr := replacement.EnsureOpen(ctx, doc.Path); openErr != nil {
-				s.logger.Debug("document re-registration failed", "language", s.cfg.Name, "path", doc.Path, "error", openErr)
-			}
-		}
-		if onReplace != nil {
-			onReplace(replacement)
-		}
-		s.setState(StateHealthy, nil)
 		current = replacement
 	}
 }
@@ -96,6 +67,9 @@ func (s *Supervisor) recordFailure(err error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.lastErr = err
+	if s.metrics != nil {
+		s.metrics.RecordRestart(s.cfg.Name)
+	}
 	s.restarts = append(s.restarts, time.Now())
 	cutoff := time.Now().Add(-s.cfg.RestartWindow.Duration)
 	filtered := s.restarts[:0]
@@ -124,6 +98,83 @@ func (s *Supervisor) setState(state State, err error) {
 	s.lastErr = err
 }
 
+func (s *Supervisor) clearFailures() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.lastErr = nil
+	s.restarts = nil
+}
+
+func (s *Supervisor) lastError() error {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.lastErr
+}
+
+func (s *Supervisor) restartBackoff() time.Duration {
+	restarts := s.restartCount()
+	if restarts <= 1 {
+		return time.Second
+	}
+	backoff := time.Second << (restarts - 1)
+	if backoff > 8*time.Second {
+		return 8 * time.Second
+	}
+	return backoff
+}
+
+func (s *Supervisor) waitBackoff(ctx context.Context, backoff time.Duration) error {
+	timer := time.NewTimer(backoff)
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-timer.C:
+		return nil
+	}
+}
+
+func (s *Supervisor) replaceManager(ctx context.Context, current *client.Manager, onReplace func(*client.Manager)) (*client.Manager, error) {
+	replacement, err := client.NewManager(ctx, s.cfg, s.root, s.store, s.logger, s.metrics)
+	if err != nil {
+		return nil, err
+	}
+	for _, doc := range current.TrackedDocs() {
+		if _, openErr := replacement.EnsureOpen(ctx, doc.Path); openErr != nil {
+			s.logger.Debug("document re-registration failed", "language", s.cfg.Name, "path", doc.Path, "error", openErr)
+		}
+	}
+	if onReplace != nil {
+		onReplace(replacement)
+	}
+	return replacement, nil
+}
+
+func (s *Supervisor) restartUntilHealthy(ctx context.Context, current *client.Manager, onReplace func(*client.Manager)) (*client.Manager, error) {
+	for {
+		if s.tooManyRestarts() {
+			s.setState(StateDegraded, s.lastError())
+			replacement, err := s.probeUntilHealthy(ctx, current, onReplace)
+			if err != nil {
+				return nil, err
+			}
+			return replacement, nil
+		}
+		s.setState(StateRestarting, s.lastError())
+		if err := s.waitBackoff(ctx, s.restartBackoff()); err != nil {
+			return nil, err
+		}
+		replacement, err := s.replaceManager(ctx, current, onReplace)
+		if err != nil {
+			s.recordFailure(err)
+			s.setState(StateRestarting, err)
+			continue
+		}
+		s.setState(StateHealthy, nil)
+		return replacement, nil
+	}
+}
+
 func (s *Supervisor) probeUntilHealthy(ctx context.Context, current *client.Manager, onReplace func(*client.Manager)) (*client.Manager, error) {
 	ticker := time.NewTicker(60 * time.Second)
 	defer ticker.Stop()
@@ -133,22 +184,13 @@ func (s *Supervisor) probeUntilHealthy(ctx context.Context, current *client.Mana
 			return current, ctx.Err()
 		default:
 		}
-		replacement, err := client.NewManager(ctx, s.cfg, s.root, s.store, s.logger)
+		replacement, err := s.replaceManager(ctx, current, onReplace)
 		if err == nil {
-			for _, doc := range current.TrackedDocs() {
-				if _, openErr := replacement.EnsureOpen(ctx, doc.Path); openErr != nil {
-					s.logger.Debug("document re-registration failed", "language", s.cfg.Name, "path", doc.Path, "error", openErr)
-				}
-			}
-			if onReplace != nil {
-				onReplace(replacement)
-			}
 			s.setState(StateHealthy, nil)
-			s.mu.Lock()
-			s.restarts = nil
-			s.mu.Unlock()
+			s.clearFailures()
 			return replacement, nil
 		}
+		s.recordFailure(err)
 		s.setState(StateDegraded, err)
 		select {
 		case <-ctx.Done():

@@ -6,7 +6,8 @@
         "hooks": [
           {
             "type": "command",
-            "command": "\"$HOME\"/.local/bin/lspd-session-start"
+            "command": "\"$HOME\"/.local/bin/lspd-session-start",
+            "timeout": 5
           }
         ]
       }
@@ -17,7 +18,20 @@
         "hooks": [
           {
             "type": "command",
-            "command": "\"$HOME\"/.local/bin/lsp-read-hook"
+            "command": "\"$HOME\"/.local/bin/lsp-read-hook",
+            "timeout": 3
+          }
+        ]
+      }
+    ],
+    "SessionEnd": [
+      {
+        "matcher": ".*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\"$HOME\"/.local/bin/lspd forget --session \"$session_id\"",
+            "timeout": 2
           }
         ]
       }

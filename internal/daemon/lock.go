@@ -9,6 +9,7 @@ import (
 
 type lockFile struct {
 	file *os.File
+	path string
 }
 
 func acquireLock(path string) (*lockFile, error) {
@@ -28,13 +29,24 @@ func acquireLock(path string) (*lockFile, error) {
 		_ = file.Close()
 		return nil, err
 	}
-	return &lockFile{file: file}, nil
+	return &lockFile{file: file, path: path}, nil
 }
 
 func (l *lockFile) close() error {
 	if l == nil || l.file == nil {
 		return nil
 	}
-	_ = syscall.Flock(int(l.file.Fd()), syscall.LOCK_UN)
-	return l.file.Close()
+	var firstErr error
+	if err := syscall.Flock(int(l.file.Fd()), syscall.LOCK_UN); err != nil && firstErr == nil {
+		firstErr = err
+	}
+	if err := l.file.Close(); err != nil && firstErr == nil {
+		firstErr = err
+	}
+	if l.path != "" {
+		if err := os.Remove(l.path); err != nil && !os.IsNotExist(err) && firstErr == nil {
+			firstErr = err
+		}
+	}
+	return firstErr
 }

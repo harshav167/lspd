@@ -13,6 +13,7 @@ import (
 
 	"github.com/harsha/lspd/internal/config"
 	"github.com/harsha/lspd/internal/lsp/store"
+	"github.com/harsha/lspd/internal/metrics"
 	"go.lsp.dev/jsonrpc2"
 	"go.lsp.dev/protocol"
 	"go.uber.org/zap"
@@ -45,14 +46,18 @@ type Manager struct {
 	conn           jsonrpc2.Conn
 	server         protocol.Server
 	tracker        *documentTracker
+	metrics        *metrics.Registry
 	mu             sync.RWMutex
 	closed         bool
 	requestTimeout time.Duration
 	startedAt      time.Time
+	runCtx         context.Context
+	runCancel      context.CancelFunc
 }
 
 // NewManager starts and initializes a language server manager.
-func NewManager(ctx context.Context, cfg config.LanguageConfig, root string, diagnosticStore *store.Store, logger *slog.Logger) (*Manager, error) {
+func NewManager(ctx context.Context, cfg config.LanguageConfig, root string, diagnosticStore *store.Store, logger *slog.Logger, metricsRegistry *metrics.Registry) (*Manager, error) {
+	runCtx, runCancel := context.WithCancel(context.Background())
 	manager := &Manager{
 		cfg:            cfg,
 		root:           root,
@@ -60,10 +65,14 @@ func NewManager(ctx context.Context, cfg config.LanguageConfig, root string, dia
 		logger:         logger,
 		zapLogger:      zap.NewNop(),
 		tracker:        newDocumentTracker(),
+		metrics:        metricsRegistry,
 		requestTimeout: 5 * time.Second,
 		startedAt:      time.Now(),
+		runCtx:         runCtx,
+		runCancel:      runCancel,
 	}
 	if err := manager.start(ctx); err != nil {
+		runCancel()
 		return nil, err
 	}
 	return manager, nil
@@ -90,6 +99,9 @@ func (m *Manager) Shutdown(ctx context.Context) error {
 	m.closed = true
 	m.mu.Unlock()
 
+	if m.runCancel != nil {
+		m.runCancel()
+	}
 	if m.server != nil {
 		shutdownCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
 		defer cancel()
@@ -151,14 +163,14 @@ func (m *Manager) start(ctx context.Context) error {
 		closers: []io.Closer{stdin, stdout},
 	})
 	conn := jsonrpc2.NewConn(stream)
-	conn.Go(ctx, m.handleIncoming)
+	conn.Go(m.runCtx, m.handleIncoming)
 
 	m.cmd = cmd
 	m.conn = conn
 	m.server = protocol.ServerDispatcher(conn, m.zapLogger.Named(m.cfg.Name))
 
 	go m.captureStderr(stderr)
-	go m.reapIdleDocuments(ctx)
+	go m.reapIdleDocuments(m.runCtx)
 
 	if err := m.initialize(ctx); err != nil {
 		_ = m.Shutdown(context.Background())

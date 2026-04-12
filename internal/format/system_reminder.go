@@ -13,12 +13,22 @@ func SystemReminder(path string, diagnostics []protocol.Diagnostic, codeActions 
 	if len(diagnostics) == 0 {
 		return ""
 	}
+	relevant := make([]protocol.Diagnostic, 0, len(diagnostics))
+	for _, diagnostic := range diagnostics {
+		switch int(diagnostic.Severity) {
+		case int(protocol.DiagnosticSeverityError), int(protocol.DiagnosticSeverityWarning):
+			relevant = append(relevant, diagnostic)
+		}
+	}
+	if len(relevant) == 0 {
+		return ""
+	}
 	var b strings.Builder
 	b.WriteString("<system-reminder>\n")
 	b.WriteString(fmt.Sprintf("Current diagnostics for %s:\n", filepath.Base(path)))
 	errors := 0
 	warnings := 0
-	for _, diagnostic := range diagnostics {
+	for _, diagnostic := range relevant {
 		switch int(diagnostic.Severity) {
 		case 1:
 			if errors == 0 {

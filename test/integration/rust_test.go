@@ -4,7 +4,6 @@ package integration
 
 import (
 	"testing"
-	"time"
 
 	"github.com/harsha/lspd/internal/config"
 )
@@ -16,15 +15,15 @@ func TestRustAnalyzerDiagnostics(t *testing.T) {
 	path := writeFile(t, root, "src/main.rs", "fn broken() -> String {\n    123\n}\n\nfn main() {\n    println!(\"{}\", missing_name);\n}\n")
 	cfg := config.Default().Languages["rust"]
 	manager, diagnosticStore, ctx := startManager(t, cfg, root)
-	doc, err := manager.EnsureOpen(ctx, path)
-	if err != nil {
-		t.Fatalf("EnsureOpen: %v", err)
+	firstVersion, firstEntry := openDocumentAndWait(t, manager, diagnosticStore, ctx, path, true)
+	if firstEntry.Version < firstVersion {
+		t.Fatalf("entry version %d < client version %d", firstEntry.Version, firstVersion)
 	}
-	entry, ok, waitErr := diagnosticStore.Wait(ctx, doc.URI, doc.Version, 10*time.Second)
-	if waitErr != nil && !ok {
-		t.Fatalf("Wait: %v", waitErr)
+	secondVersion, secondEntry := updateDocumentAndWait(t, manager, diagnosticStore, ctx, path, "fn broken() -> String {\n    String::from(123)\n}\n\nfn main() {\n    println!(\"{}\", other_missing_name);\n}\n", true)
+	if secondVersion <= firstVersion {
+		t.Fatalf("expected version to increase, got %d then %d", firstVersion, secondVersion)
 	}
-	if len(entry.Diagnostics) == 0 {
-		t.Fatal("expected rust diagnostics")
+	if secondEntry.Version < secondVersion {
+		t.Fatalf("entry version %d < client version %d", secondEntry.Version, secondVersion)
 	}
 }

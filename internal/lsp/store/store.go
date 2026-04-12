@@ -10,42 +10,64 @@ import (
 
 // Entry is the latest known diagnostics for a document.
 type Entry struct {
-	URI         protocol.DocumentURI  `json:"uri"`
-	Version     int32                 `json:"version"`
-	Diagnostics []protocol.Diagnostic `json:"diagnostics"`
-	UpdatedAt   time.Time             `json:"updated_at"`
-	Language    string                `json:"language"`
+	URI              protocol.DocumentURI  `json:"uri"`
+	Version          int32                 `json:"version"`
+	PublishedVersion int32                 `json:"published_version"`
+	Diagnostics      []protocol.Diagnostic `json:"diagnostics"`
+	UpdatedAt        time.Time             `json:"updated_at"`
+	Language         string                `json:"language"`
 }
 
 // Store tracks diagnostics and supports waiting for new versions.
 type Store struct {
 	mu      sync.RWMutex
 	entries map[protocol.DocumentURI]Entry
-	waiters map[protocol.DocumentURI][]chan struct{}
+	waiters map[protocol.DocumentURI][]waiter
+}
+
+type waiter struct {
+	minVersion int32
+	ch         chan struct{}
 }
 
 // New creates a diagnostic store.
 func New() *Store {
-	return &Store{entries: map[protocol.DocumentURI]Entry{}, waiters: map[protocol.DocumentURI][]chan struct{}{}}
+	return &Store{entries: map[protocol.DocumentURI]Entry{}, waiters: map[protocol.DocumentURI][]waiter{}}
 }
 
 // Publish stores diagnostics and wakes waiters.
 func (s *Store) Publish(uri protocol.DocumentURI, version int32, diagnostics []protocol.Diagnostic, language string) {
 	s.mu.Lock()
 	effectiveVersion := version
-	if effectiveVersion == 0 {
-		if existing, ok := s.entries[uri]; ok && existing.Version > 0 {
+	if existing, ok := s.entries[uri]; ok && existing.Version > 0 {
+		if effectiveVersion > 0 && effectiveVersion <= existing.Version {
 			effectiveVersion = existing.Version + 1
-		} else {
-			effectiveVersion = 1
+		} else if effectiveVersion <= 0 {
+			effectiveVersion = existing.Version + 1
 		}
+	} else if effectiveVersion <= 0 {
+		effectiveVersion = 1
 	}
-	s.entries[uri] = Entry{URI: uri, Version: effectiveVersion, Diagnostics: cloneDiagnostics(diagnostics), UpdatedAt: time.Now(), Language: language}
+	entry := Entry{URI: uri, Version: effectiveVersion, PublishedVersion: version, Diagnostics: cloneDiagnostics(diagnostics), UpdatedAt: time.Now(), Language: language}
+	s.entries[uri] = entry
 	waiters := s.waiters[uri]
-	delete(s.waiters, uri)
-	s.mu.Unlock()
+	ready := make([]chan struct{}, 0, len(waiters))
+	remaining := make([]waiter, 0, len(waiters))
 	for _, waiter := range waiters {
-		close(waiter)
+		if effectiveVersion >= waiter.minVersion {
+			ready = append(ready, waiter.ch)
+			continue
+		}
+		remaining = append(remaining, waiter)
+	}
+	if len(remaining) == 0 {
+		delete(s.waiters, uri)
+	} else {
+		s.waiters[uri] = remaining
+	}
+	s.mu.Unlock()
+	for _, ch := range ready {
+		close(ch)
 	}
 }
 
@@ -57,8 +79,7 @@ func (s *Store) Peek(uri protocol.DocumentURI) (Entry, bool) {
 	if !ok {
 		return Entry{}, false
 	}
-	entry.Diagnostics = cloneDiagnostics(entry.Diagnostics)
-	return entry, true
+	return copyEntry(entry), true
 }
 
 // Forget forgets a URI.
@@ -75,8 +96,7 @@ func (s *Store) Snapshot() []Entry {
 	defer s.mu.RUnlock()
 	out := make([]Entry, 0, len(s.entries))
 	for _, entry := range s.entries {
-		entry.Diagnostics = cloneDiagnostics(entry.Diagnostics)
-		out = append(out, entry)
+		out = append(out, copyEntry(entry))
 	}
 	return out
 }
@@ -86,27 +106,54 @@ func (s *Store) Wait(ctx context.Context, uri protocol.DocumentURI, minVersion i
 	if entry, ok := s.Peek(uri); ok && entry.Version >= minVersion {
 		return entry, true, nil
 	}
-	waiter := make(chan struct{})
+	w := waiter{minVersion: minVersion, ch: make(chan struct{})}
 	s.mu.Lock()
 	if entry, ok := s.entries[uri]; ok && entry.Version >= minVersion {
 		s.mu.Unlock()
-		return entry, true, nil
+		return copyEntry(entry), true, nil
 	}
-	s.waiters[uri] = append(s.waiters[uri], waiter)
+	s.waiters[uri] = append(s.waiters[uri], w)
 	s.mu.Unlock()
 	timer := time.NewTimer(timeout)
 	defer timer.Stop()
 	select {
-	case <-waiter:
+	case <-w.ch:
 		entry, ok := s.Peek(uri)
 		return entry, ok, nil
 	case <-timer.C:
+		s.removeWaiter(uri, w.ch)
 		entry, ok := s.Peek(uri)
 		return entry, ok, context.DeadlineExceeded
 	case <-ctx.Done():
+		s.removeWaiter(uri, w.ch)
 		entry, ok := s.Peek(uri)
 		return entry, ok, ctx.Err()
 	}
+}
+
+func (s *Store) removeWaiter(uri protocol.DocumentURI, ch chan struct{}) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	waiters := s.waiters[uri]
+	if len(waiters) == 0 {
+		return
+	}
+	filtered := waiters[:0]
+	for _, waiter := range waiters {
+		if waiter.ch != ch {
+			filtered = append(filtered, waiter)
+		}
+	}
+	if len(filtered) == 0 {
+		delete(s.waiters, uri)
+		return
+	}
+	s.waiters[uri] = filtered
+}
+
+func copyEntry(entry Entry) Entry {
+	entry.Diagnostics = cloneDiagnostics(entry.Diagnostics)
+	return entry
 }
 
 func cloneDiagnostics(in []protocol.Diagnostic) []protocol.Diagnostic {

@@ -4,7 +4,6 @@ package integration
 
 import (
 	"testing"
-	"time"
 
 	"github.com/harsha/lspd/internal/config"
 )
@@ -16,18 +15,15 @@ func TestPyrightDiagnostics(t *testing.T) {
 	path := writeFile(t, root, "main.py", "def broken() -> str:\n    return 123\n\nprint(missing_name)\n")
 	cfg := config.Default().Languages["py"]
 	manager, diagnosticStore, ctx := startManager(t, cfg, root)
-	doc, err := manager.EnsureOpen(ctx, path)
-	if err != nil {
-		t.Fatalf("EnsureOpen: %v", err)
+	firstVersion, firstEntry := openDocumentAndWait(t, manager, diagnosticStore, ctx, path, true)
+	if firstEntry.Version < firstVersion {
+		t.Fatalf("entry version %d < client version %d", firstEntry.Version, firstVersion)
 	}
-	if err := manager.Save(ctx, doc.URI, doc.Content); err != nil {
-		t.Fatalf("Save: %v", err)
+	secondVersion, secondEntry := updateDocumentAndWait(t, manager, diagnosticStore, ctx, path, "def broken() -> str:\n    return 456\n\nprint(other_missing)\n", true)
+	if secondVersion <= firstVersion {
+		t.Fatalf("expected version to increase, got %d then %d", firstVersion, secondVersion)
 	}
-	entry, ok, waitErr := diagnosticStore.Wait(ctx, doc.URI, doc.Version, 10*time.Second)
-	if waitErr != nil && !ok {
-		t.Fatalf("Wait: %v", waitErr)
-	}
-	if len(entry.Diagnostics) == 0 {
-		t.Fatal("expected pyright diagnostics")
+	if secondEntry.Version < secondVersion {
+		t.Fatalf("entry version %d < client version %d", secondEntry.Version, secondVersion)
 	}
 }

@@ -14,16 +14,19 @@ func (m *Manager) handleIncoming(ctx context.Context, reply jsonrpc2.Replier, re
 		var params protocol.PublishDiagnosticsParams
 		if err := json.Unmarshal(req.Params(), &params); err == nil {
 			m.store.Publish(params.URI, int32(params.Version), params.Diagnostics, m.cfg.Name)
+			if m.metrics != nil {
+				m.metrics.RecordDiagnostics(m.cfg.Name, len(params.Diagnostics))
+			}
 		}
 	case protocol.MethodWindowLogMessage, protocol.MethodWindowShowMessage:
 		var payload map[string]any
-		if err := json.Unmarshal(req.Params(), &payload); err == nil {
+		if err := json.Unmarshal(req.Params(), &payload); err == nil && m.logger != nil {
 			m.logger.Debug("lsp message", "language", m.cfg.Name, "method", req.Method(), "payload", payload)
 		}
 	default:
 		if len(req.Params()) > 0 {
 			var payload map[string]any
-			if err := json.Unmarshal(req.Params(), &payload); err == nil {
+			if err := json.Unmarshal(req.Params(), &payload); err == nil && m.logger != nil {
 				m.logger.Debug("lsp notification", "language", m.cfg.Name, "method", req.Method(), "payload", payload)
 			}
 		}

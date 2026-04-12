@@ -1,19 +1,32 @@
 run_dir: ~/.factory/run
 log_file: ~/.factory/logs/lspd.log
+log_level: info
+log_format: json
+log_max_size_mb: 50
+log_max_backups: 5
+log_max_age_days: 7
 idle_timeout: 30m
 mcp:
   host: 127.0.0.1
+  port: 0
   endpoint: /mcp
   session_header: X-Droid-Session-Id
 socket:
   path: ~/.factory/run/lspd.sock
 metrics:
   enabled: false
+  host: 127.0.0.1
+  port: 39091
+  debug: false
+watcher:
+  enabled: true
+  debounce: 250ms
 policy:
   max_per_file: 20
   max_per_turn: 50
   minimum_severity: 1
   attach_code_actions: true
+  max_code_actions_per_diagnostic: 2
 languages:
   ts:
     command: typescript-language-server

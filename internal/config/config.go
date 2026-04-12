@@ -39,6 +39,11 @@ type Config struct {
 	RunDir        string                    `yaml:"run_dir"`
 	LogFile       string                    `yaml:"log_file"`
 	Debug         bool                      `yaml:"debug"`
+	LogLevel      string                    `yaml:"log_level"`
+	LogFormat     string                    `yaml:"log_format"`
+	LogMaxSizeMB  int                       `yaml:"log_max_size_mb"`
+	LogMaxBackups int                       `yaml:"log_max_backups"`
+	LogMaxAgeDays int                       `yaml:"log_max_age_days"`
 	IdleTimeout   Duration                  `yaml:"idle_timeout"`
 	MCP           MCPConfig                 `yaml:"mcp"`
 	Socket        SocketConfig              `yaml:"socket"`
@@ -112,10 +117,15 @@ func Default() Config {
 	logFile := filepath.Join(home, ".factory", "logs", "lspd.log")
 	socketPath := filepath.Join(runDir, "lspd.sock")
 	return Config{
-		RunDir:      runDir,
-		LogFile:     logFile,
-		Debug:       false,
-		IdleTimeout: Duration{Duration: 30 * time.Minute},
+		RunDir:        runDir,
+		LogFile:       logFile,
+		Debug:         false,
+		LogLevel:      "info",
+		LogFormat:     "json",
+		LogMaxSizeMB:  50,
+		LogMaxBackups: 5,
+		LogMaxAgeDays: 7,
+		IdleTimeout:   Duration{Duration: 30 * time.Minute},
 		MCP: MCPConfig{
 			Host:          "127.0.0.1",
 			Port:          0,
@@ -199,6 +209,9 @@ func Default() Config {
 
 // Normalize ensures the config contains derived defaults.
 func (c *Config) Normalize() {
+	c.RunDir = expandPath(c.RunDir)
+	c.LogFile = expandPath(c.LogFile)
+	c.Socket.Path = expandPath(c.Socket.Path)
 	if c.MCP.Host == "" {
 		c.MCP.Host = "127.0.0.1"
 	}
@@ -211,8 +224,33 @@ func (c *Config) Normalize() {
 	if c.Watcher.Debounce.Duration <= 0 {
 		c.Watcher.Debounce = Duration{Duration: 250 * time.Millisecond}
 	}
-	if c.IdleTimeout.Duration <= 0 {
+	if c.IdleTimeout.Duration < 0 {
 		c.IdleTimeout = Duration{Duration: 30 * time.Minute}
+	}
+	if c.LogLevel == "" {
+		if c.Debug {
+			c.LogLevel = "debug"
+		} else {
+			c.LogLevel = "info"
+		}
+	}
+	if c.LogFormat == "" {
+		c.LogFormat = "json"
+	}
+	if c.LogMaxSizeMB <= 0 {
+		c.LogMaxSizeMB = 50
+	}
+	if c.LogMaxBackups <= 0 {
+		c.LogMaxBackups = 5
+	}
+	if c.LogMaxAgeDays <= 0 {
+		c.LogMaxAgeDays = 7
+	}
+	if c.Metrics.Host == "" {
+		c.Metrics.Host = "127.0.0.1"
+	}
+	if c.Metrics.Port <= 0 {
+		c.Metrics.Port = 39091
 	}
 	if c.Policy.MaxPerFile <= 0 {
 		c.Policy.MaxPerFile = 20
@@ -249,4 +287,22 @@ func (c *Config) Normalize() {
 			c.LanguageByExt[normalized] = name
 		}
 	}
+}
+
+func expandPath(path string) string {
+	if path == "" {
+		return ""
+	}
+	expanded := os.ExpandEnv(path)
+	switch {
+	case expanded == "~":
+		if home, err := os.UserHomeDir(); err == nil {
+			expanded = home
+		}
+	case strings.HasPrefix(expanded, "~/"):
+		if home, err := os.UserHomeDir(); err == nil {
+			expanded = filepath.Join(home, expanded[2:])
+		}
+	}
+	return filepath.Clean(expanded)
 }

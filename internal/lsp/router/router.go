@@ -13,6 +13,7 @@ import (
 	"github.com/harsha/lspd/internal/lsp/client"
 	"github.com/harsha/lspd/internal/lsp/store"
 	"github.com/harsha/lspd/internal/lsp/supervisor"
+	"github.com/harsha/lspd/internal/metrics"
 )
 
 // Router resolves file paths to language server managers.
@@ -20,14 +21,34 @@ type Router struct {
 	cfg      config.Config
 	store    *store.Store
 	logger   *slog.Logger
+	ctx      context.Context
+	cancel   context.CancelFunc
+	metrics  *metrics.Registry
 	mu       sync.Mutex
 	managers map[string]*client.Manager
 	supers   map[string]*supervisor.Supervisor
 }
 
 // New creates a router.
-func New(cfg config.Config, diagnosticStore *store.Store, logger *slog.Logger) *Router {
-	return &Router{cfg: cfg, store: diagnosticStore, logger: logger, managers: map[string]*client.Manager{}, supers: map[string]*supervisor.Supervisor{}}
+func New(cfg config.Config, diagnosticStore *store.Store, logger *slog.Logger, metricsRegistry *metrics.Registry) *Router {
+	ctx, cancel := context.WithCancel(context.Background())
+	return &Router{
+		cfg:      cfg,
+		store:    diagnosticStore,
+		logger:   logger,
+		ctx:      ctx,
+		cancel:   cancel,
+		metrics:  metricsRegistry,
+		managers: map[string]*client.Manager{},
+		supers:   map[string]*supervisor.Supervisor{},
+	}
+}
+
+// UpdateConfig refreshes the router's view of language mappings and definitions.
+func (r *Router) UpdateConfig(cfg config.Config) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.cfg = cfg
 }
 
 // Resolve returns a manager for the provided path, creating it lazily.
@@ -46,15 +67,15 @@ func (r *Router) Resolve(ctx context.Context, path string) (*client.Manager, con
 	if manager, ok := r.managers[key]; ok {
 		return manager, lang, nil
 	}
-	manager, err := client.NewManager(ctx, lang, root, r.store, r.logger)
+	manager, err := client.NewManager(ctx, lang, root, r.store, r.logger, r.metrics)
 	if err != nil {
 		return nil, config.LanguageConfig{}, err
 	}
 	r.managers[key] = manager
-	super := supervisor.New(lang, root, r.store, r.logger)
+	super := supervisor.New(lang, root, r.store, r.logger, r.metrics)
 	r.supers[key] = super
 	go func() {
-		_, _ = super.Run(context.Background(), manager, func(replacement *client.Manager) {
+		_, _ = super.Run(r.ctx, manager, func(replacement *client.Manager) {
 			r.mu.Lock()
 			defer r.mu.Unlock()
 			r.managers[key] = replacement
@@ -112,4 +133,26 @@ func (r *Router) States() []ManagerState {
 		})
 	}
 	return states
+}
+
+// Close shuts down supervisors and all running managers.
+func (r *Router) Close(ctx context.Context) error {
+	r.cancel()
+
+	r.mu.Lock()
+	managers := make([]*client.Manager, 0, len(r.managers))
+	for _, manager := range r.managers {
+		managers = append(managers, manager)
+	}
+	r.managers = map[string]*client.Manager{}
+	r.supers = map[string]*supervisor.Supervisor{}
+	r.mu.Unlock()
+
+	var firstErr error
+	for _, manager := range managers {
+		if err := manager.Shutdown(ctx); err != nil && firstErr == nil {
+			firstErr = err
+		}
+	}
+	return firstErr
 }

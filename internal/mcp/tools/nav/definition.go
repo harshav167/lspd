@@ -30,6 +30,7 @@ func Register(server *sdkserver.MCPServer, deps Dependencies) {
 
 func definitionHandler(deps Dependencies) func(context.Context, sdkmcp.CallToolRequest, positionArgs) (*sdkmcp.CallToolResult, error) {
 	return func(ctx context.Context, _ sdkmcp.CallToolRequest, args positionArgs) (*sdkmcp.CallToolResult, error) {
+		recordToolRequest(deps, "lspDefinition")
 		manager, _, err := deps.Router.Resolve(ctx, args.Path)
 		if err != nil {
 			return sdkmcp.NewToolResultError(err.Error()), nil
@@ -38,7 +39,7 @@ func definitionHandler(deps Dependencies) func(context.Context, sdkmcp.CallToolR
 			return sdkmcp.NewToolResultError(err.Error()), nil
 		}
 		locations, err := manager.Definition(ctx, &protocol.DefinitionParams{TextDocumentPositionParams: protocol.TextDocumentPositionParams{
-			TextDocument: protocol.TextDocumentIdentifier{URI: protocol.DocumentURI("file://" + args.Path)},
+			TextDocument: protocol.TextDocumentIdentifier{URI: documentURI(args.Path)},
 			Position:     protocol.Position{Line: uint32(max(args.Line-1, 0)), Character: uint32(max(args.Character-1, 0))},
 		}})
 		if err != nil {
@@ -48,6 +49,7 @@ func definitionHandler(deps Dependencies) func(context.Context, sdkmcp.CallToolR
 		for _, location := range locations {
 			response.Definitions = append(response.Definitions, locationFromProtocol(location))
 		}
+		sortLocations(response.Definitions)
 		return responseJSON(response)
 	}
 }
