@@ -157,11 +157,13 @@ lspd is a Go daemon that manages language server subprocesses (gopls, pyright, t
 
 | Language | Server | Extensions |
 |---|---|---|
-| TypeScript / JavaScript | `typescript-language-server` | `.ts` `.tsx` `.js` `.jsx` `.mts` `.cts` |
+| TypeScript / JavaScript* | `typescript-language-server` | `.ts` `.tsx` `.js` `.jsx` `.mts` `.cts` |
 | Python | `pyright-langserver` | `.py` |
 | Go | `gopls` | `.go` |
 | Rust | `rust-analyzer` | `.rs` |
 | C / C++ | `clangd` | `.c` `.cc` `.cpp` `.cxx` `.h` `.hpp` `.hxx` |
+
+\* TypeScript has a known issue with `getIdeDiagnostics` timing out on cold start — see [Known issues](#known-issues).
 
 Language servers are spawned lazily on first file touch. Adding a language is a config entry:
 
@@ -295,6 +297,26 @@ go vet ./...
 go test -race ./...
 act push              # run CI locally before pushing
 ```
+
+---
+
+## Known issues
+
+### TypeScript `getIdeDiagnostics` timeout
+
+The model-callable `getIdeDiagnostics` MCP tool currently **times out for TypeScript files** on projects with dependencies (`tsconfig.json` + `node_modules`). This is a cold-start issue with `typescript-language-server` / `tsserver` — the server spawns successfully, `didOpen` fires, but `textDocument/publishDiagnostics` notifications don't arrive within the wait timeout.
+
+**What works:**
+- Write-time diagnostics via Droid's native `fetchDiagnostics` pipeline (the automatic `<system-reminder>` after Edit/Create/ApplyPatch)
+- Read-time diagnostics via the PostToolUse Read hook (the automatic `<system-reminder>` after Read)
+- Other languages — Go (`gopls`), Python (`pyright`), Rust (`rust-analyzer`), C/C++ (`clangd`) all return diagnostics correctly from `getIdeDiagnostics`
+
+**What doesn't work:**
+- Explicit model calls to `getIdeDiagnostics` on `.ts` / `.tsx` files return empty or time out after 3 seconds
+
+**Workaround:** Use the automatic injection paths (write/read hooks). They work for TypeScript because they query the diagnostic store directly after the LSP server has published, rather than waiting synchronously on a specific version.
+
+**Fix in progress.** Tracking as [#1](https://github.com/harshav167/lspd/issues/1). Likely requires either a longer cold-start timeout, `workspace/configuration` request handling, or switching the default TS server to `vtsls`.
 
 ---
 
