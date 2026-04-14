@@ -17,12 +17,19 @@ func WatchSignals(ctx context.Context, onReload func(), onStop func()) {
 			select {
 			case <-ctx.Done():
 				return
-			case sig := <-signals:
+			case sig, ok := <-signals:
+				if !ok {
+					return
+				}
 				switch sig {
 				case syscall.SIGHUP:
-					onReload()
+					if onReload != nil {
+						onReload()
+					}
 				default:
-					onStop()
+					if onStop != nil {
+						onStop()
+					}
 					return
 				}
 			}

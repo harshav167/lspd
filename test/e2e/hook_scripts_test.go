@@ -47,7 +47,7 @@ func TestSessionStartScriptEmitsContext(t *testing.T) {
 	if !strings.Contains(string(output), "\"hookEventName\":\"SessionStart\"") {
 		t.Fatalf("expected SessionStart hook output, got %q", string(output))
 	}
-	if !strings.Contains(string(output), "LSP bridge active") {
+	if !strings.Contains(string(output), "lspd is ready for plain droid") && !strings.Contains(string(output), "LSP bridge active") {
 		t.Fatalf("expected additionalContext with LSP bridge info, got %q", string(output))
 	}
 }

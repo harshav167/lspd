@@ -6,7 +6,6 @@ import (
 
 	"github.com/harshav167/lspd/internal/format"
 	sdkmcp "github.com/mark3labs/mcp-go/mcp"
-	"go.lsp.dev/protocol"
 )
 
 type referencesArgs struct {
@@ -32,20 +31,15 @@ type referencesResponse struct {
 func referencesHandler(deps Dependencies) func(context.Context, sdkmcp.CallToolRequest, referencesArgs) (*sdkmcp.CallToolResult, error) {
 	return func(ctx context.Context, _ sdkmcp.CallToolRequest, args referencesArgs) (*sdkmcp.CallToolResult, error) {
 		recordToolRequest(deps, "lspReferences")
-		manager, _, err := deps.Router.Resolve(ctx, args.Path)
+		service, err := resolvePositionService(ctx, deps, positionArgs{
+			Path:      args.Path,
+			Line:      args.Line,
+			Character: args.Character,
+		})
 		if err != nil {
 			return sdkmcp.NewToolResultError(err.Error()), nil
 		}
-		if _, err := manager.EnsureOpen(ctx, args.Path); err != nil {
-			return sdkmcp.NewToolResultError(err.Error()), nil
-		}
-		locations, err := manager.References(ctx, &protocol.ReferenceParams{
-			TextDocumentPositionParams: protocol.TextDocumentPositionParams{
-				TextDocument: protocol.TextDocumentIdentifier{URI: documentURI(args.Path)},
-				Position:     protocol.Position{Line: uint32(max(args.Line-1, 0)), Character: uint32(max(args.Character-1, 0))},
-			},
-			Context: protocol.ReferenceContext{IncludeDeclaration: args.IncludeDeclaration},
-		})
+		locations, err := service.manager.References(ctx, service.referenceParams(args.IncludeDeclaration))
 		if err != nil {
 			return sdkmcp.NewToolResultError(err.Error()), nil
 		}

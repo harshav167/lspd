@@ -6,7 +6,6 @@ import (
 
 	"github.com/harshav167/lspd/internal/format"
 	sdkmcp "github.com/mark3labs/mcp-go/mcp"
-	"go.lsp.dev/protocol"
 )
 
 type formatArgs struct {
@@ -23,14 +22,11 @@ type formatResponse struct {
 func formatHandler(deps Dependencies) func(context.Context, sdkmcp.CallToolRequest, formatArgs) (*sdkmcp.CallToolResult, error) {
 	return func(ctx context.Context, _ sdkmcp.CallToolRequest, args formatArgs) (*sdkmcp.CallToolResult, error) {
 		recordToolRequest(deps, "lspFormat")
-		manager, _, err := deps.Router.Resolve(ctx, args.Path)
+		service, err := resolveDocumentService(ctx, deps, args.Path)
 		if err != nil {
 			return sdkmcp.NewToolResultError(err.Error()), nil
 		}
-		if _, err := manager.EnsureOpen(ctx, args.Path); err != nil {
-			return sdkmcp.NewToolResultError(err.Error()), nil
-		}
-		edits, err := manager.Formatting(ctx, &protocol.DocumentFormattingParams{TextDocument: protocol.TextDocumentIdentifier{URI: documentURI(args.Path)}})
+		edits, err := service.manager.Formatting(ctx, service.formattingParams())
 		if err != nil {
 			return sdkmcp.NewToolResultError(err.Error()), nil
 		}

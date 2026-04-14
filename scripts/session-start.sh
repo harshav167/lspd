@@ -11,4 +11,4 @@ if ! "$LSPD_BIN" ping --config "$CONFIG" >/dev/null 2>&1; then
     "$LSPD_BIN" start --config "$CONFIG" >/dev/null 2>&1 || exit 0
 fi
 
-printf '{"hookSpecificOutput":{"hookEventName":"SessionStart","additionalContext":"LSP bridge active. Diagnostics are injected after every Edit, Create, and Read."}}'
+printf '{"hookSpecificOutput":{"hookEventName":"SessionStart","additionalContext":"lspd is ready for plain droid. Writes flow through Droid’s IDE auto-connect path, PostToolUse(Read) injects read-time diagnostics, and SessionEnd stops the daemon."}}'

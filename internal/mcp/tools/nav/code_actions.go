@@ -25,23 +25,19 @@ type codeActionSummary struct {
 func codeActionsHandler(deps Dependencies) func(context.Context, sdkmcp.CallToolRequest, rangeArgs) (*sdkmcp.CallToolResult, error) {
 	return func(ctx context.Context, _ sdkmcp.CallToolRequest, args rangeArgs) (*sdkmcp.CallToolResult, error) {
 		recordToolRequest(deps, "lspCodeActions")
-		manager, _, err := deps.Router.Resolve(ctx, args.Path)
+		service, err := resolveDocumentService(ctx, deps, args.Path)
 		if err != nil {
 			return sdkmcp.NewToolResultError(err.Error()), nil
 		}
-		doc, err := manager.EnsureOpen(ctx, args.Path)
-		if err != nil {
-			return sdkmcp.NewToolResultError(err.Error()), nil
+		entry, ok, waitErr := deps.Store.Wait(ctx, service.doc.URI, service.doc.Version, 500*time.Millisecond)
+		if waitErr != nil && waitErr != context.DeadlineExceeded && waitErr != context.Canceled {
+			return sdkmcp.NewToolResultError(waitErr.Error()), nil
 		}
-		entry, _, _ := deps.Store.Wait(ctx, doc.URI, doc.Version, 500*time.Millisecond)
-		actions, err := manager.CodeAction(ctx, &protocol.CodeActionParams{
-			TextDocument: protocol.TextDocumentIdentifier{URI: doc.URI},
-			Range: protocol.Range{
-				Start: protocol.Position{Line: uint32(max(args.StartLine-1, 0)), Character: uint32(max(args.StartCharacter-1, 0))},
-				End:   protocol.Position{Line: uint32(max(args.EndLine-1, 0)), Character: uint32(max(args.EndCharacter-1, 0))},
-			},
-			Context: protocol.CodeActionContext{Diagnostics: entry.Diagnostics},
-		})
+		var diagnostics []protocol.Diagnostic
+		if ok {
+			diagnostics = entry.Diagnostics
+		}
+		actions, err := service.manager.CodeAction(ctx, service.codeActionParams(args, diagnostics))
 		if err != nil {
 			return sdkmcp.NewToolResultError(err.Error()), nil
 		}

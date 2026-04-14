@@ -23,10 +23,17 @@ droid
 The installer:
 1. Downloads `lspd` and `lsp-read-hook` binaries for your platform
 2. Writes daemon config to `~/.factory/hooks/lsp/lspd.yaml`
-3. Merges diagnostic hooks into your `~/.factory/settings.json` (non-destructive — your existing hooks are preserved)
+3. Merges the full hook chain into your `~/.factory/settings.json` (non-destructive — your existing hooks are preserved):
+   - `SessionStart` starts `lspd`
+   - `PostToolUse(Read)` runs `lsp-read-hook`
+   - `SessionEnd` stops `lspd`
 4. Enables IDE auto-discovery so Droid finds lspd automatically
 
-No wrapper script. No alias. No environment variables to set. lspd starts via a SessionStart hook, registers itself via a lock file at `~/.factory/ide/`, and Droid auto-discovers it — the same mechanism the VS Code extension uses.
+No production wrapper script. No alias. No environment variables to set. Install once, then run plain `droid`. `lspd` starts from `SessionStart`, registers itself via a lock file at `~/.factory/ide/`, and Droid auto-discovers it — the same mechanism the VS Code extension uses.
+
+### Advanced / testing path only
+
+The repo still includes `scripts/droid-launcher.sh`, but that wrapper is **only** for branch-local testing or isolated debugging of `lspd` itself. It is not the supported production route.
 
 ---
 
@@ -147,7 +154,9 @@ lspd is a Go daemon that manages language server subprocesses (gopls, pyright, t
 
 **Write path:** Droid's built-in `fetchDiagnostics` calls lspd's `getIdeDiagnostics` endpoint before and after each edit. Droid diffs the results and attaches new errors to the tool result. No hooks needed — lspd plugs into the same slot the VS Code extension uses.
 
-**Read path:** A PostToolUse hook runs `lsp-read-hook`, which connects to lspd's Unix socket, peeks the diagnostic store, and injects a `<system-reminder>` via `hookSpecificOutput.additionalContext`. The agent sees problems before it starts editing.
+**Read path:** A `PostToolUse(Read)` hook runs `lsp-read-hook`, which connects to lspd's Unix socket, peeks the diagnostic store, and injects a `<system-reminder>` via `hookSpecificOutput.additionalContext`. The agent sees problems before it starts editing.
+
+**Session lifecycle:** the supported production chain is `SessionStart` → `PostToolUse(Read)` → `SessionEnd`. Plain `droid` triggers the start hook, reads get reminders from the hook binary, and session end shuts the daemon down cleanly.
 
 **Coexistence:** When VS Code/Cursor is connected, Droid prefers the real IDE for writes (detected via `preferredIdeName` matching). lspd only handles writes when no IDE is present. The Read hook runs in all scenarios.
 
@@ -194,10 +203,10 @@ droid
 The installer:
 1. Downloads `lspd` and `lsp-read-hook` binaries for your platform
 2. Writes daemon config to `~/.factory/hooks/lsp/lspd.yaml`
-3. Merges diagnostic hooks into your `~/.factory/settings.json` (non-destructive — your existing hooks are preserved)
+3. Merges the `SessionStart` / `PostToolUse(Read)` / `SessionEnd` hook chain into your `~/.factory/settings.json` (non-destructive — your existing hooks are preserved)
 4. Enables IDE auto-discovery so Droid finds lspd automatically
 
-No wrapper script. No alias. No environment variables to set. lspd starts via a SessionStart hook, registers itself via a lock file at `~/.factory/ide/`, and Droid auto-discovers it — the same mechanism the VS Code extension uses.
+No production wrapper script. No alias. No environment variables to set. Install once, then run plain `droid`.
 
 ### Update
 
@@ -213,7 +222,7 @@ Same command. It downloads the latest binaries and overwrites the old ones. Conf
 curl -fsSL https://github.com/harshav167/lspd/releases/latest/download/uninstall.sh | sh
 ```
 
-Removes binaries, hooks, and runtime state. Your config at `~/.factory/hooks/lsp/lspd.yaml` is kept unless you pass `--purge`.
+Removes binaries, config, hooks, and runtime state for the plain-`droid` integration.
 
 ---
 

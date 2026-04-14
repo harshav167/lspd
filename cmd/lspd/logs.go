@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"bytes"
 	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
 	"io"
@@ -64,20 +65,42 @@ func runLogs(args []string) error {
 	defer file.Close()
 
 	offset := int64(len(data))
+	reader := bufio.NewReader(file)
+	var remainder []byte
 	for {
 		if info, statErr := file.Stat(); statErr == nil && info.Size() < offset {
 			offset = 0
+			remainder = nil
+			reader.Reset(file)
 		}
 		if _, err := file.Seek(offset, io.SeekStart); err != nil {
 			return err
 		}
-		chunk, err := io.ReadAll(file)
-		if err != nil {
+		reader.Reset(file)
+		readAny := false
+		for {
+			line, err := reader.ReadBytes('\n')
+			if len(line) > 0 {
+				readAny = true
+				offset += int64(len(line))
+				buffer := append(remainder, line...)
+				if buffer[len(buffer)-1] == '\n' {
+					printFilteredLogChunk(buffer, cutoff)
+					remainder = remainder[:0]
+				} else {
+					remainder = append(remainder[:0], buffer...)
+				}
+			}
+			if err == nil {
+				continue
+			}
+			if errors.Is(err, io.EOF) {
+				break
+			}
 			return err
 		}
-		if len(chunk) > 0 {
-			printFilteredLogChunk(chunk, cutoff)
-			offset += int64(len(chunk))
+		if !readAny && len(remainder) > 0 {
+			// Keep partial line buffered until more bytes arrive.
 		}
 		time.Sleep(500 * time.Millisecond)
 	}

@@ -2,9 +2,6 @@ package compat
 
 import (
 	"context"
-	"net/url"
-	"path/filepath"
-	"time"
 
 	internalformat "github.com/harshav167/lspd/internal/format"
 	"github.com/harshav167/lspd/internal/lsp/router"
@@ -14,7 +11,6 @@ import (
 	"github.com/harshav167/lspd/internal/policy"
 	sdkmcp "github.com/mark3labs/mcp-go/mcp"
 	sdkserver "github.com/mark3labs/mcp-go/server"
-	"go.lsp.dev/protocol"
 )
 
 type diagnosticsArgs struct {
@@ -43,55 +39,24 @@ func Register(server *sdkserver.MCPServer, deps Dependencies) {
 		if deps.Metrics != nil {
 			deps.Metrics.RecordRequest("mcp", "getIdeDiagnostics")
 		}
-		path, err := pathFromURI(args.URI)
-		if err != nil {
+		service := policy.NewDiagnosticsService(deps.Router, deps.Store, deps.Policy)
+		result, err := service.Fetch(ctx, policy.DiagnosticsRequest{
+			URI:          args.URI,
+			SessionID:    deps.SessionIDFrom(ctx),
+			Freshness:    policy.DiagnosticsFreshnessBestEffortNow,
+			Presentation: policy.DiagnosticsPresentationRaw,
+		})
+		if err != nil || !result.Found {
 			return emptyDiagnosticsResult()
 		}
-		uri := protocol.DocumentURI(args.URI)
-		cached, cachedOK := deps.Store.Peek(uri)
-		if deps.Router == nil {
-			return diagnosticsResult(ctx, deps, path, cached, cachedOK)
-		}
-		manager, _, err := deps.Router.Resolve(ctx, path)
-		if err != nil {
-			return diagnosticsResult(ctx, deps, path, cached, cachedOK)
-		}
-		doc, err := manager.EnsureOpen(ctx, path)
-		if err != nil {
-			return diagnosticsResult(ctx, deps, path, cached, cachedOK)
-		}
-		entry, ok, _ := deps.Store.Wait(ctx, doc.URI, doc.Version, 1200*time.Millisecond)
-		if ok && (entry.PublishedVersion > 0 || entry.Version >= doc.Version) {
-			return diagnosticsResult(ctx, deps, path, entry, true)
-		}
-		return diagnosticsResult(ctx, deps, path, cached, cachedOK)
+		return diagnosticsResult(result.Entry)
 	}))
 	server.AddTool(sdkmcp.NewTool("openDiff", sdkmcp.WithDescription(descriptions.OpenDiff)), stubHandler("openDiff", deps.Metrics))
 	server.AddTool(sdkmcp.NewTool("closeDiff", sdkmcp.WithDescription(descriptions.CloseDiff)), stubHandler("closeDiff", deps.Metrics))
 	server.AddTool(sdkmcp.NewTool("openFile", sdkmcp.WithDescription(descriptions.OpenFile)), stubHandler("openFile", deps.Metrics))
 }
 
-func pathFromURI(raw string) (string, error) {
-	parsed, err := url.Parse(raw)
-	if err != nil {
-		return "", err
-	}
-	if parsed.Scheme == "" || parsed.Scheme == "file" {
-		return filepath.Clean(parsed.Path), nil
-	}
-	return "", url.InvalidHostError(raw)
-}
-
-func diagnosticsResult(ctx context.Context, deps Dependencies, path string, entry store.Entry, ok bool) (*sdkmcp.CallToolResult, error) {
-	if !ok {
-		return emptyDiagnosticsResult()
-	}
-	// Don't run session dedup here. Droid's own compareDiagnostics(before, after)
-	// handles the "only show new errors" diffing for write-time injection.
-	// If we dedup here, the first fetchDiagnostics call (Droid's internal before/after
-	// pipeline) marks everything as delivered, and all subsequent calls — including
-	// the model's explicit getIdeDiagnostics and the read hook — return empty.
-	// Return raw diagnostics and let Droid handle the presentation logic.
+func diagnosticsResult(entry store.Entry) (*sdkmcp.CallToolResult, error) {
 	return sdkmcp.NewToolResultJSON(diagnosticsResponse{Diagnostics: internalformat.ToIdeDiagnostics(entry.Diagnostics)})
 }
 

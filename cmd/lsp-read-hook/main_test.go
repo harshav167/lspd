@@ -37,8 +37,6 @@ func TestSocketPathUsesEnvOverride(t *testing.T) {
 }
 
 func TestWriteHookOutputEncodesPostToolUsePayload(t *testing.T) {
-	t.Parallel()
-
 	original := os.Stdout
 	reader, writer, err := os.Pipe()
 	if err != nil {

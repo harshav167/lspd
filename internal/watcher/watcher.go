@@ -103,6 +103,31 @@ func (w *Watcher) Run(ctx context.Context) {
 	}()
 }
 
+// SyncRoots periodically reconciles watched roots from the supplied snapshotter.
+func (w *Watcher) SyncRoots(ctx context.Context, roots func() []string) {
+	sync := func() {
+		if roots == nil {
+			return
+		}
+		for _, root := range roots() {
+			_ = w.Add(root)
+		}
+	}
+
+	sync()
+
+	ticker := time.NewTicker(time.Second)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			sync()
+		}
+	}
+}
+
 func (w *Watcher) addDir(path string) error {
 	cleaned := filepath.Clean(path)
 	if shouldIgnorePath(cleaned) {

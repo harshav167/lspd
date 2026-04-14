@@ -11,6 +11,7 @@ import (
 
 	"github.com/harshav167/lspd/internal/config"
 	"github.com/harshav167/lspd/internal/format"
+	"github.com/harshav167/lspd/internal/policy"
 	"github.com/harshav167/lspd/internal/socket"
 )
 
@@ -45,12 +46,17 @@ func main() {
 		writeHookOutput("")
 		return
 	}
+	// This binary is wired only into PostToolUse(Read). Writes come from Droid's
+	// native IDE auto-connect diagnostics path; this hook only surfaces read-time
+	// reminders from lspd's diagnostic store.
 	response, err := request(socket.Request{
-		Op:        "drain",
-		Path:      path,
-		SessionID: input.SessionID,
-		Kind:      "read",
-		TimeoutMs: int(requestTimeout / time.Millisecond),
+		Op:           "fetch",
+		Path:         path,
+		SessionID:    input.SessionID,
+		Kind:         "read",
+		TimeoutMs:    int(requestTimeout / time.Millisecond),
+		Freshness:    policy.DiagnosticsFreshnessBestEffortNow,
+		Presentation: policy.DiagnosticsPresentationSurfaced,
 	})
 	if err != nil || response.Entry == nil {
 		writeHookOutput("")

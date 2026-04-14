@@ -25,17 +25,42 @@ func (m *Manager) withTimeout(ctx context.Context) (context.Context, context.Can
 	return context.WithTimeout(ctx, m.requestTimeout)
 }
 
+func (m *Manager) didOpen(ctx context.Context, doc Document) error {
+	ctx, cancel := m.withTimeout(ctx)
+	defer cancel()
+	return m.server.DidOpen(ctx, &protocol.DidOpenTextDocumentParams{
+		TextDocument: protocol.TextDocumentItem{
+			URI:        doc.URI,
+			LanguageID: doc.LanguageID,
+			Version:    doc.Version,
+			Text:       doc.Content,
+		},
+	})
+}
+
+func (m *Manager) didChange(ctx context.Context, doc Document) error {
+	ctx, cancel := m.withTimeout(ctx)
+	defer cancel()
+	return m.server.DidChange(ctx, &protocol.DidChangeTextDocumentParams{
+		TextDocument: protocol.VersionedTextDocumentIdentifier{
+			Version:                doc.Version,
+			TextDocumentIdentifier: protocol.TextDocumentIdentifier{URI: doc.URI},
+		},
+		ContentChanges: []protocol.TextDocumentContentChangeEvent{{Text: doc.Content}},
+	})
+}
+
 // EnsureOpen opens or updates a document in the language server.
-func (m *Manager) EnsureOpen(ctx context.Context, path string) (trackedDocument, error) {
+func (m *Manager) EnsureOpen(ctx context.Context, path string) (Document, error) {
 	contentBytes, err := os.ReadFile(path)
 	if err != nil {
-		return trackedDocument{}, err
+		return Document{}, err
 	}
 	content := string(contentBytes)
 	uri := pathToURI(path)
 	doc, ok := m.tracker.get(uri)
 	if !ok {
-		doc = trackedDocument{
+		doc = Document{
 			Path:         path,
 			URI:          uri,
 			LanguageID:   m.cfg.LanguageID,
@@ -43,35 +68,27 @@ func (m *Manager) EnsureOpen(ctx context.Context, path string) (trackedDocument,
 			Content:      content,
 			LastAccessed: time.Now(),
 		}
-		ctx, cancel := m.withTimeout(ctx)
-		defer cancel()
-		if err := m.server.DidOpen(ctx, &protocol.DidOpenTextDocumentParams{
-			TextDocument: protocol.TextDocumentItem{
-				URI:        uri,
-				LanguageID: doc.LanguageID,
-				Version:    doc.Version,
-				Text:       content,
-			},
-		}); err != nil {
-			return trackedDocument{}, err
+		if err := m.didOpen(ctx, doc); err != nil {
+			return Document{}, err
 		}
 	} else if doc.Content != content {
 		doc.Version++
 		doc.Content = content
 		doc.LastAccessed = time.Now()
-		ctx, cancel := m.withTimeout(ctx)
-		defer cancel()
-		if err := m.server.DidChange(ctx, &protocol.DidChangeTextDocumentParams{
-			TextDocument:   protocol.VersionedTextDocumentIdentifier{Version: doc.Version, TextDocumentIdentifier: protocol.TextDocumentIdentifier{URI: uri}},
-			ContentChanges: []protocol.TextDocumentContentChangeEvent{{Text: content}},
-		}); err != nil {
-			return trackedDocument{}, err
+		if err := m.didChange(ctx, doc); err != nil {
+			return Document{}, err
 		}
 	} else {
 		doc.LastAccessed = time.Now()
 	}
 	m.tracker.put(doc)
 	return doc, nil
+}
+
+// RestoreDocument re-registers a tracked document on a fresh language server.
+func (m *Manager) RestoreDocument(ctx context.Context, doc Document) error {
+	_, err := m.EnsureOpen(ctx, doc.Path)
+	return err
 }
 
 // Close closes a tracked document.

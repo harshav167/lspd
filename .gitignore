@@ -22,3 +22,4 @@ lsp_diag_smoke.go
 # Runtime state
 .factory/
 *.log
+*.bak

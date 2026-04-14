@@ -4,7 +4,6 @@ import (
 	"context"
 
 	sdkmcp "github.com/mark3labs/mcp-go/mcp"
-	"go.lsp.dev/protocol"
 )
 
 type renameArgs struct {
@@ -27,20 +26,15 @@ type renameResponse struct {
 func renameHandler(deps Dependencies) func(context.Context, sdkmcp.CallToolRequest, renameArgs) (*sdkmcp.CallToolResult, error) {
 	return func(ctx context.Context, _ sdkmcp.CallToolRequest, args renameArgs) (*sdkmcp.CallToolResult, error) {
 		recordToolRequest(deps, "lspRename")
-		manager, _, err := deps.Router.Resolve(ctx, args.Path)
+		service, err := resolvePositionService(ctx, deps, positionArgs{
+			Path:      args.Path,
+			Line:      args.Line,
+			Character: args.Character,
+		})
 		if err != nil {
 			return sdkmcp.NewToolResultError(err.Error()), nil
 		}
-		if _, err := manager.EnsureOpen(ctx, args.Path); err != nil {
-			return sdkmcp.NewToolResultError(err.Error()), nil
-		}
-		edit, err := manager.Rename(ctx, &protocol.RenameParams{
-			TextDocumentPositionParams: protocol.TextDocumentPositionParams{
-				TextDocument: protocol.TextDocumentIdentifier{URI: documentURI(args.Path)},
-				Position:     protocol.Position{Line: uint32(max(args.Line-1, 0)), Character: uint32(max(args.Character-1, 0))},
-			},
-			NewName: args.NewName,
-		})
+		edit, err := service.manager.Rename(ctx, service.renameParams(args.NewName))
 		if err != nil {
 			return sdkmcp.NewToolResultError(err.Error()), nil
 		}

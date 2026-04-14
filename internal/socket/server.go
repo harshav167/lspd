@@ -19,6 +19,8 @@ type Server struct {
 	handler  *handler
 	listener net.Listener
 	wg       sync.WaitGroup
+	ctx      context.Context
+	cancel   context.CancelFunc
 }
 
 // Callbacks customize socket semantics.
@@ -48,6 +50,9 @@ func NewServer(path string, diagnosticStore *store.Store, callbacks Callbacks) *
 
 // Start starts the socket server.
 func (s *Server) Start(ctx context.Context) error {
+	serveCtx, cancel := context.WithCancel(ctx)
+	s.ctx = serveCtx
+	s.cancel = cancel
 	if err := os.MkdirAll(filepath.Dir(s.path), 0o700); err != nil {
 		return fmt.Errorf("create socket dir: %w", err)
 	}
@@ -79,7 +84,14 @@ func (s *Server) Start(ctx context.Context) error {
 				if request.TimeoutMs > 0 {
 					_ = conn.SetDeadline(time.Now().Add(time.Duration(request.TimeoutMs)*time.Millisecond + 500*time.Millisecond))
 				}
-				response := s.handler.handle(ctx, request)
+				response := s.handler.handle(serveCtx, request)
+				if request.Op == "reload" && response.OK && s.handler.status != nil {
+					if reloadStatus, ok := s.handler.status()["reload"].(map[string]any); ok {
+						if message, ok := reloadStatus["message"].(string); ok && message != "" {
+							response.Message = message
+						}
+					}
+				}
 				_ = json.NewEncoder(conn).Encode(response)
 			}()
 		}
@@ -89,6 +101,10 @@ func (s *Server) Start(ctx context.Context) error {
 
 // Close closes the socket listener.
 func (s *Server) Close() error {
+	if s.cancel != nil {
+		s.cancel()
+		s.cancel = nil
+	}
 	if s.listener != nil {
 		_ = s.listener.Close()
 	}

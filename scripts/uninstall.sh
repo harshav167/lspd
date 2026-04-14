@@ -1,12 +1,11 @@
 #!/usr/bin/env sh
-# lspd uninstaller — removes binaries, config, hooks, and lock files.
+# lspd uninstaller — removes the plain-`droid` integration installed by install.sh.
 set -eu
 
 BIN_DIR="${HOME}/.local/bin"
 CONFIG_DIR="${HOME}/.factory/hooks/lsp"
 SETTINGS_FILE="${HOME}/.factory/settings.json"
 RUN_DIR="${HOME}/.factory/run/lspd"
-IDE_DIR="${HOME}/.factory/ide"
 LOG_DIR="${HOME}/.factory/logs/lspd"
 
 info() { printf '\033[1;34m==>\033[0m %s\n' "$1"; }
@@ -85,16 +84,11 @@ else
   ok "No settings.json found"
 fi
 
-# ── 5. Remove lock files ─────────────────────────────────────────────
-info "Removing lock files..."
-rm -f "${IDE_DIR}"/*.lock 2>/dev/null || true
-ok "Lock files removed"
-
-# ── 6. Remove runtime directories ────────────────────────────────────
+# ── 5. Remove runtime directories ────────────────────────────────────
 info "Cleaning up runtime directories..."
 rm -rf "$RUN_DIR"
 rm -rf "$LOG_DIR"
 ok "Runtime directories removed"
 
 echo ""
-info "Uninstall complete. lspd has been fully removed."
+info "Uninstall complete. Plain 'droid' no longer starts lspd automatically."

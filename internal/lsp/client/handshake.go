@@ -5,6 +5,7 @@ import (
 	"path/filepath"
 	"time"
 
+	"github.com/harshav167/lspd/internal/lsp/store"
 	"go.lsp.dev/protocol"
 )
 
@@ -68,5 +69,5 @@ func (m *Manager) warmup() {
 }
 
 func pathToURI(path string) protocol.DocumentURI {
-	return protocol.DocumentURI("file://" + filepath.ToSlash(path))
+	return store.URIFromPath(path)
 }

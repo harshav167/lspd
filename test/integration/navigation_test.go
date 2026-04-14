@@ -111,6 +111,9 @@ func TestNavigationContracts(t *testing.T) {
 	definitions := sliceAt(t, definitionResult, "definitions")
 	firstDefinition := mapAt(t, definitions[0])
 	assertColumnOnly(t, firstDefinition)
+	if firstDefinition["path"] != filepath.Clean(libPath) {
+		t.Fatalf("expected definition path %s, got %#v", filepath.Clean(libPath), firstDefinition["path"])
+	}
 	if preview, _ := firstDefinition["preview"].(string); !strings.Contains(preview, "func Add") {
 		t.Fatalf("expected definition preview, got %#v", firstDefinition["preview"])
 	}
@@ -225,6 +228,11 @@ func TestNavigationContracts(t *testing.T) {
 	if _, ok := firstCall["to"].(map[string]any); !ok {
 		t.Fatalf("expected outgoing hierarchy edge to expose callee, got %#v", firstCall)
 	}
+	callee := mapAt(t, firstCall["to"])
+	if callee["path"] != filepath.Clean(libPath) {
+		t.Fatalf("expected outgoing callee path %s, got %#v", filepath.Clean(libPath), callee["path"])
+	}
+	assertColumnOnly(t, callee)
 	callSite := mapAt(t, sliceAt(t, firstCall, "call_sites")[0])
 	if callSite["path"] != filepath.Clean(mainPath) {
 		t.Fatalf("expected outgoing call site path to remain on caller file, got %#v", callSite["path"])
@@ -245,6 +253,15 @@ func TestNavigationContracts(t *testing.T) {
 	if _, ok := typeHierarchyResult["types"].([]any); !ok {
 		t.Fatalf("expected type hierarchy types array, got %#v", typeHierarchyResult["types"])
 	}
+	typeItems := sliceAt(t, typeHierarchyResult, "types")
+	if len(typeItems) == 0 {
+		t.Fatalf("expected subtype results, got %#v", typeHierarchyResult["types"])
+	}
+	firstType := mapAt(t, typeItems[0])
+	if firstType["path"] != filepath.Clean(mainPath) {
+		t.Fatalf("expected subtype path %s, got %#v", filepath.Clean(mainPath), firstType["path"])
+	}
+	assertColumnOnly(t, firstType)
 }
 
 func callStructuredTool(t *testing.T, client *mcpclient.Client, name string, args map[string]any) map[string]any {

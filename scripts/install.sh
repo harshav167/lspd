@@ -1,5 +1,5 @@
 #!/bin/sh
-# lspd installer — downloads pre-built binaries, merges hooks, zero dependencies.
+# lspd installer — installs the production plain-`droid` startup contract.
 # Idempotent: safe to run multiple times.
 set -eu
 
@@ -35,7 +35,7 @@ mkdir -p "$HOME/.factory/run/lspd"
 mkdir -p "$HOME/.factory/logs/lspd"
 mkdir -p "$HOME/.factory/ide"
 
-# Check if lspd is already running (upgrade vs fresh install)
+# Check if lspd is already running (upgrade vs idle install)
 ALREADY_RUNNING=false
 if [ -x "$INSTALL_DIR/lspd" ] && "$INSTALL_DIR/lspd" ping --config "$CONFIG_DIR/lspd.yaml" >/dev/null 2>&1; then
     ALREADY_RUNNING=true
@@ -89,6 +89,9 @@ if "general" not in settings:
 
 settings["general"]["ideAutoConnect"] = True
 
+socket_path = os.path.join(home, ".factory/run/lspd/lspd.sock")
+config_path = os.path.join(home, ".factory/hooks/lsp/lspd.yaml")
+
 lspd_hooks = {
     "SessionStart": {
         "matcher": "",
@@ -96,7 +99,11 @@ lspd_hooks = {
     },
     "PostToolUse": {
         "matcher": "Read",
-        "hooks": [{"type": "command", "command": "LSPD_SOCKET_PATH=" + os.path.join(home, ".factory/run/lspd/lspd.sock") + " " + os.path.join(install_dir, "lsp-read-hook"), "timeout": 3}]
+        "hooks": [{"type": "command", "command": "LSPD_SOCKET_PATH=" + socket_path + " " + os.path.join(install_dir, "lsp-read-hook"), "timeout": 3}]
+    },
+    "SessionEnd": {
+        "matcher": "",
+        "hooks": [{"type": "command", "command": os.path.join(install_dir, "lspd") + " stop --config " + config_path + " >/dev/null 2>&1 || true", "timeout": 5}]
     },
 }
 
@@ -113,25 +120,18 @@ print("    Hooks merged (ideAutoConnect: true)")
 PY
 
 if [ "$ALREADY_RUNNING" = true ]; then
-    # Upgrade: binary replaced on disk. Running process keeps the old binary in memory.
-    # It picks up the new binary on next restart (session end, reboot, or manual lspd restart).
-    echo "==> lspd is running — binary updated on disk."
-    echo "    Active sessions stay connected. New binary takes effect on next restart."
-    echo "    To restart now: lspd stop && lspd start --config $CONFIG_DIR/lspd.yaml"
+    echo "==> lspd is already running."
+    echo "    Active sessions stay connected. The updated binary will be picked up on the next SessionStart."
 else
-    # Fresh install: start lspd so the lock file exists before droid starts.
-    echo "==> Starting lspd..."
-    "$INSTALL_DIR/lspd" start --config "$CONFIG_DIR/lspd.yaml" >/dev/null 2>&1
-    if "$INSTALL_DIR/lspd" ping --config "$CONFIG_DIR/lspd.yaml" >/dev/null 2>&1; then
-        PORT=$(cat "$HOME/.factory/run/lspd/lspd.port" 2>/dev/null || echo "unknown")
-        echo "    lspd running on port $PORT"
-    else
-        echo "    WARNING: lspd failed to start. Run '$INSTALL_DIR/lspd start --config $CONFIG_DIR/lspd.yaml' manually."
-    fi
+    echo "==> lspd is not running yet."
+    echo "    That's expected: the SessionStart hook launches it when you run plain 'droid'."
 fi
 
 echo ""
-echo "Done! Run 'droid' normally — lspd starts automatically."
+echo "Done! Run 'droid' normally."
+echo "  - SessionStart launches lspd when needed"
+echo "  - PostToolUse(Read) injects read-time diagnostics"
+echo "  - SessionEnd stops lspd cleanly"
 echo ""
 echo "Update:    curl -fsSL https://github.com/$REPO/releases/latest/download/install.sh | sh"
 echo "Uninstall: curl -fsSL https://github.com/$REPO/releases/latest/download/uninstall.sh | sh"

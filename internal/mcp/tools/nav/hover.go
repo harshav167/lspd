@@ -6,7 +6,6 @@ import (
 
 	"github.com/harshav167/lspd/internal/format"
 	sdkmcp "github.com/mark3labs/mcp-go/mcp"
-	"go.lsp.dev/protocol"
 )
 
 type hoverResponse struct {
@@ -18,17 +17,11 @@ type hoverResponse struct {
 func hoverHandler(deps Dependencies) func(context.Context, sdkmcp.CallToolRequest, positionArgs) (*sdkmcp.CallToolResult, error) {
 	return func(ctx context.Context, _ sdkmcp.CallToolRequest, args positionArgs) (*sdkmcp.CallToolResult, error) {
 		recordToolRequest(deps, "lspHover")
-		manager, _, err := deps.Router.Resolve(ctx, args.Path)
+		service, err := resolvePositionService(ctx, deps, args)
 		if err != nil {
 			return sdkmcp.NewToolResultError(err.Error()), nil
 		}
-		if _, err := manager.EnsureOpen(ctx, args.Path); err != nil {
-			return sdkmcp.NewToolResultError(err.Error()), nil
-		}
-		hover, err := manager.Hover(ctx, &protocol.HoverParams{TextDocumentPositionParams: protocol.TextDocumentPositionParams{
-			TextDocument: protocol.TextDocumentIdentifier{URI: documentURI(args.Path)},
-			Position:     protocol.Position{Line: uint32(max(args.Line-1, 0)), Character: uint32(max(args.Character-1, 0))},
-		}})
+		hover, err := service.manager.Hover(ctx, service.hoverParams())
 		if err != nil {
 			return sdkmcp.NewToolResultError(err.Error()), nil
 		}

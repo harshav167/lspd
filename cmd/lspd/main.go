@@ -53,11 +53,12 @@ func main() {
 }
 
 func requestSocket(path string, request socket.Request) (socket.Response, error) {
-	conn, err := net.Dial("unix", path)
+	conn, err := net.DialTimeout("unix", path, 5*time.Second)
 	if err != nil {
 		return socket.Response{}, err
 	}
 	defer conn.Close()
+	_ = conn.SetDeadline(time.Now().Add(10 * time.Second))
 	if err := json.NewEncoder(conn).Encode(request); err != nil {
 		return socket.Response{}, err
 	}

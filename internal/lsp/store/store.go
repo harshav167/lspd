@@ -2,6 +2,7 @@ package store
 
 import (
 	"context"
+	"path/filepath"
 	"sync"
 	"time"
 
@@ -16,6 +17,12 @@ type Entry struct {
 	Diagnostics      []protocol.Diagnostic `json:"diagnostics"`
 	UpdatedAt        time.Time             `json:"updated_at"`
 	Language         string                `json:"language"`
+}
+
+// WithDiagnostics returns a copy of the entry with cloned diagnostics.
+func (e Entry) WithDiagnostics(diagnostics []protocol.Diagnostic) Entry {
+	e.Diagnostics = cloneDiagnostics(diagnostics)
+	return e
 }
 
 // Store tracks diagnostics and supports waiting for new versions.
@@ -163,4 +170,13 @@ func cloneDiagnostics(in []protocol.Diagnostic) []protocol.Diagnostic {
 	out := make([]protocol.Diagnostic, len(in))
 	copy(out, in)
 	return out
+}
+
+// URIFromPath normalizes a filesystem path into the file URI shape used by the store.
+func URIFromPath(path string) protocol.DocumentURI {
+	cleaned := filepath.ToSlash(filepath.Clean(path))
+	if len(cleaned) > 0 && cleaned[0] != '/' {
+		cleaned = "/" + cleaned
+	}
+	return protocol.DocumentURI("file://" + cleaned)
 }

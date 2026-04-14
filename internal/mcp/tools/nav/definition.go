@@ -7,7 +7,6 @@ import (
 	"github.com/harshav167/lspd/internal/mcp/descriptions"
 	sdkmcp "github.com/mark3labs/mcp-go/mcp"
 	sdkserver "github.com/mark3labs/mcp-go/server"
-	"go.lsp.dev/protocol"
 )
 
 type definitionsResponse struct {
@@ -31,17 +30,11 @@ func Register(server *sdkserver.MCPServer, deps Dependencies) {
 func definitionHandler(deps Dependencies) func(context.Context, sdkmcp.CallToolRequest, positionArgs) (*sdkmcp.CallToolResult, error) {
 	return func(ctx context.Context, _ sdkmcp.CallToolRequest, args positionArgs) (*sdkmcp.CallToolResult, error) {
 		recordToolRequest(deps, "lspDefinition")
-		manager, _, err := deps.Router.Resolve(ctx, args.Path)
+		service, err := resolvePositionService(ctx, deps, args)
 		if err != nil {
 			return sdkmcp.NewToolResultError(err.Error()), nil
 		}
-		if _, err := manager.EnsureOpen(ctx, args.Path); err != nil {
-			return sdkmcp.NewToolResultError(err.Error()), nil
-		}
-		locations, err := manager.Definition(ctx, &protocol.DefinitionParams{TextDocumentPositionParams: protocol.TextDocumentPositionParams{
-			TextDocument: protocol.TextDocumentIdentifier{URI: documentURI(args.Path)},
-			Position:     protocol.Position{Line: uint32(max(args.Line-1, 0)), Character: uint32(max(args.Character-1, 0))},
-		}})
+		locations, err := service.manager.Definition(ctx, service.definitionParams())
 		if err != nil {
 			return sdkmcp.NewToolResultError(err.Error()), nil
 		}

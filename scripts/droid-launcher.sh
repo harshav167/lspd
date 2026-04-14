@@ -1,4 +1,7 @@
 #!/usr/bin/env sh
+# Advanced/testing launcher only.
+# Production installs should run plain `droid`; this wrapper is for branch-local
+# settings isolation when debugging lspd itself.
 set -eu
 
 LSPD_BIN="${LSPD_BIN:-$(command -v lspd || printf '%s' "$HOME/.local/bin/lspd")}"

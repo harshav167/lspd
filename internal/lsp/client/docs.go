@@ -16,6 +16,9 @@ type trackedDocument struct {
 	LastAccessed time.Time
 }
 
+// Document is the manager-owned snapshot of an open text document.
+type Document = trackedDocument
+
 type documentTracker struct {
 	mu   sync.RWMutex
 	docs map[protocol.DocumentURI]trackedDocument

@@ -2,7 +2,9 @@ package config
 
 import (
 	"context"
+	"fmt"
 	"reflect"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -23,6 +25,33 @@ type Metadata struct {
 	LoadedPaths []string  `json:"loaded_paths"`
 	Generation  uint64    `json:"generation"`
 	ReloadedAt  time.Time `json:"reloaded_at"`
+}
+
+// ReloadReport describes what a runtime reload changed immediately vs what stays deferred.
+type ReloadReport struct {
+	Changed    bool     `json:"changed"`
+	AppliedNow []string `json:"applied_now,omitempty"`
+	Deferred   []string `json:"deferred,omitempty"`
+}
+
+// Message summarizes the reload truth in one line.
+func (r ReloadReport) Message() string {
+	switch {
+	case !r.Changed:
+		return "config unchanged"
+	case len(r.AppliedNow) == 0 && len(r.Deferred) == 0:
+		return "config reloaded"
+	case len(r.Deferred) == 0:
+		return fmt.Sprintf("reload applied now: %s", strings.Join(r.AppliedNow, "; "))
+	case len(r.AppliedNow) == 0:
+		return fmt.Sprintf("reload accepted but deferred until restart: %s", strings.Join(r.Deferred, "; "))
+	default:
+		return fmt.Sprintf(
+			"reload applied now: %s; deferred until restart: %s",
+			strings.Join(r.AppliedNow, "; "),
+			strings.Join(r.Deferred, "; "),
+		)
+	}
 }
 
 // Manager stores the current config and broadcasts reloads.
@@ -76,13 +105,14 @@ func (m *Manager) Subscribe() <-chan Config {
 	return ch
 }
 
-// Reload reloads the config from disk.
-func (m *Manager) Reload(_ context.Context) (Config, bool, error) {
+// Reload reloads the config from disk and classifies what changed immediately vs later.
+func (m *Manager) Reload(_ context.Context) (Config, ReloadReport, error) {
 	cfg, loadedFrom, err := Load(m.path, m.cwd)
 	if err != nil {
-		return Config{}, false, err
+		return Config{}, ReloadReport{}, err
 	}
 	current := m.currentState()
+	report := classifyReload(current.Config, cfg, current.LoadedFrom, loadedFrom)
 	updated := state{
 		Config:      cfg,
 		LoadedFrom:  loadedFrom,
@@ -90,14 +120,13 @@ func (m *Manager) Reload(_ context.Context) (Config, bool, error) {
 		Generation:  current.Generation,
 		ReloadedAt:  current.ReloadedAt,
 	}
-	changed := !reflect.DeepEqual(current.Config, cfg) || current.LoadedFrom != loadedFrom
-	if changed {
+	if report.Changed {
 		updated.Generation++
 		updated.ReloadedAt = time.Now()
 	}
 	m.value.Store(updated)
-	if !changed {
-		return cfg, false, nil
+	if !report.Changed {
+		return cfg, report, nil
 	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -107,11 +136,66 @@ func (m *Manager) Reload(_ context.Context) (Config, bool, error) {
 		default:
 		}
 	}
-	return cfg, true, nil
+	return cfg, report, nil
 }
 
 func (m *Manager) currentState() state {
 	return m.value.Load().(state)
+}
+
+func classifyReload(current, next Config, currentLoadedFrom, nextLoadedFrom string) ReloadReport {
+	report := ReloadReport{
+		Changed: !reflect.DeepEqual(current, next) || currentLoadedFrom != nextLoadedFrom,
+	}
+	if !report.Changed {
+		return report
+	}
+	if currentLoadedFrom != nextLoadedFrom {
+		report.AppliedNow = appendUnique(report.AppliedNow, "config source metadata")
+	}
+	if !reflect.DeepEqual(current.Policy, next.Policy) {
+		report.AppliedNow = appendUnique(report.AppliedNow, "diagnostic policy")
+	}
+	if !reflect.DeepEqual(current.LanguageByExt, next.LanguageByExt) || !reflect.DeepEqual(current.Languages, next.Languages) {
+		report.AppliedNow = appendUnique(report.AppliedNow, "language routing for newly resolved files")
+		report.Deferred = appendUnique(report.Deferred, "already-running language server sessions keep prior command/settings until restart")
+	}
+	if current.RunDir != next.RunDir || current.IdleTimeout != next.IdleTimeout {
+		report.Deferred = appendUnique(report.Deferred, "runtime directories and idle policy")
+	}
+	if current.Debug != next.Debug ||
+		current.LogFile != next.LogFile ||
+		current.LogLevel != next.LogLevel ||
+		current.LogFormat != next.LogFormat ||
+		current.LogMaxSizeMB != next.LogMaxSizeMB ||
+		current.LogMaxBackups != next.LogMaxBackups ||
+		current.LogMaxAgeDays != next.LogMaxAgeDays {
+		report.Deferred = appendUnique(report.Deferred, "logger output settings")
+	}
+	if !reflect.DeepEqual(current.MCP, next.MCP) {
+		report.Deferred = appendUnique(report.Deferred, "MCP listener settings")
+	}
+	if !reflect.DeepEqual(current.Socket, next.Socket) {
+		report.Deferred = appendUnique(report.Deferred, "socket listener path")
+	}
+	if !reflect.DeepEqual(current.Metrics, next.Metrics) {
+		report.Deferred = appendUnique(report.Deferred, "metrics listener settings")
+	}
+	if !reflect.DeepEqual(current.Watcher, next.Watcher) {
+		report.Deferred = appendUnique(report.Deferred, "watcher lifecycle and debounce settings")
+	}
+	slices.Sort(report.AppliedNow)
+	slices.Sort(report.Deferred)
+	return report
+}
+
+func appendUnique(items []string, value string) []string {
+	for _, item := range items {
+		if item == value {
+			return items
+		}
+	}
+	return append(items, value)
 }
 
 func splitLoadedPaths(loadedFrom string) []string {

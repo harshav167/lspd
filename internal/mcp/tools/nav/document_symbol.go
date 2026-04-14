@@ -31,14 +31,11 @@ type documentSymbolNode struct {
 func documentSymbolHandler(deps Dependencies) func(context.Context, sdkmcp.CallToolRequest, documentSymbolArgs) (*sdkmcp.CallToolResult, error) {
 	return func(ctx context.Context, _ sdkmcp.CallToolRequest, args documentSymbolArgs) (*sdkmcp.CallToolResult, error) {
 		recordToolRequest(deps, "lspDocumentSymbol")
-		manager, _, err := deps.Router.Resolve(ctx, args.Path)
+		service, err := resolveDocumentService(ctx, deps, args.Path)
 		if err != nil {
 			return sdkmcp.NewToolResultError(err.Error()), nil
 		}
-		if _, err := manager.EnsureOpen(ctx, args.Path); err != nil {
-			return sdkmcp.NewToolResultError(err.Error()), nil
-		}
-		symbols, err := manager.DocumentSymbol(ctx, &protocol.DocumentSymbolParams{TextDocument: protocol.TextDocumentIdentifier{URI: documentURI(args.Path)}})
+		symbols, err := service.manager.DocumentSymbol(ctx, service.documentSymbolParams())
 		if err != nil {
 			return sdkmcp.NewToolResultError(err.Error()), nil
 		}

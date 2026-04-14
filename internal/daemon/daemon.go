@@ -30,6 +30,7 @@ type App struct {
 	Logger        *slog.Logger
 	Store         *store.Store
 	Policy        *policy.Engine
+	Diagnostics   *policy.DiagnosticsService
 	Router        *router.Router
 	MCP           *internalmcp.Server
 	Socket        *socket.Server
@@ -40,11 +41,11 @@ type App struct {
 	port        int
 	startedAt   time.Time
 	metricsSrv  *http.Server
-	mu          sync.Mutex
-	watched     map[string]struct{}
 	cancel      context.CancelFunc
 	closeOnce   sync.Once
+	reloadMu    sync.RWMutex
 	ideLockPath string
+	lastReload  *config.ReloadReport
 }
 
 // New creates the daemon app.
@@ -63,7 +64,6 @@ func New(configPath, cwd string) (*App, error) {
 		Store:         diagnosticStore,
 		Metrics:       metrics.New(),
 		startedAt:     time.Now(),
-		watched:       map[string]struct{}{},
 	}
 	var appRouter *router.Router
 	app.Policy = policy.New(cfg.Policy, func(ctx context.Context, path string, diagnostic protocol.Diagnostic) ([]string, error) {
@@ -102,22 +102,21 @@ func New(configPath, cwd string) (*App, error) {
 	})
 	app.Router = router.New(cfg, diagnosticStore, logger, app.Metrics)
 	appRouter = app.Router
+	app.Diagnostics = policy.NewDiagnosticsService(app.Router, diagnosticStore, app.Policy)
 	app.MCP = internalmcp.NewServer(cfg, internalmcp.Dependencies{
 		Config:  manager,
 		Router:  app.Router,
 		Store:   diagnosticStore,
 		Policy:  app.Policy,
 		Logger:  logger,
-		Touch:   app.Touch,
 		Metrics: app.Metrics,
 	})
 	app.Socket = socket.NewServer(cfg.Socket.Path, diagnosticStore, socket.Callbacks{
 		Peek:          app.peekDiagnostics,
 		Drain:         app.drainDiagnostics,
-		Forget:        func(request socket.Request) { app.Policy.ResetSession(request.SessionID) },
+		Forget:        func(request socket.Request) { app.Diagnostics.ResetSession(request.SessionID) },
 		Status:        app.Status,
 		Reload:        app.Reload,
-		Touch:         app.Touch,
 		RecordRequest: app.Metrics.RecordRequest,
 	})
 	if cfg.Watcher.Enabled {
@@ -158,7 +157,7 @@ func (a *App) Start(ctx context.Context) error {
 	}
 	if a.Watcher != nil {
 		a.Watcher.Run(ctx)
-		go a.syncWatcherRoots(ctx)
+		go a.Watcher.SyncRoots(ctx, a.watcherRoots)
 	}
 	if a.Config.Metrics.Enabled {
 		mux := http.NewServeMux()
@@ -242,28 +241,33 @@ func (a *App) SetCancel(cancel context.CancelFunc) {
 	a.cancel = cancel
 }
 
-// Touch is a no-op keepalive hook retained for interface stability.
-func (a *App) Touch() {
-}
-
 // Reload reloads daemon configuration and reapplies fields that can change at runtime.
 func (a *App) Reload(ctx context.Context) error {
-	cfg, changed, err := a.ConfigManager.Reload(ctx)
+	cfg, report, err := a.ConfigManager.Reload(ctx)
 	if err != nil {
 		if a.Logger != nil {
 			a.Logger.Error("config reload failed", "error", err)
 		}
 		return err
 	}
+	a.reloadMu.Lock()
+	a.lastReload = &report
+	a.reloadMu.Unlock()
 	a.Config = cfg
-	a.Policy.UpdateConfig(cfg.Policy)
-	if a.Router != nil {
-		a.Router.UpdateConfig(cfg)
+	if report.Changed {
+		a.Policy.UpdateConfig(cfg.Policy)
+		if a.Router != nil {
+			a.Router.UpdateConfig(cfg)
+		}
 	}
-	if a.Logger != nil && changed {
+	if a.Logger != nil {
 		metadata := a.ConfigManager.Metadata()
 		a.Logger.Info(
 			"config reloaded",
+			"message", report.Message(),
+			"changed", report.Changed,
+			"applied_now", report.AppliedNow,
+			"deferred", report.Deferred,
 			"generation", metadata.Generation,
 			"loaded_paths", metadata.LoadedPaths,
 		)
@@ -278,6 +282,7 @@ func (a *App) Close(ctx context.Context) error {
 		a.removeIdeLockFile()
 		if a.cancel != nil {
 			a.cancel()
+			a.cancel = nil
 		}
 		if a.metricsSrv != nil {
 			_ = a.metricsSrv.Shutdown(ctx)
@@ -348,6 +353,23 @@ func (a *App) Status() map[string]any {
 		})
 	}
 	metadata := a.ConfigManager.Metadata()
+	reloadStatus := map[string]any{
+		"requested": false,
+		"changed":   false,
+		"message":   "startup config only",
+	}
+	a.reloadMu.RLock()
+	lastReload := a.lastReload
+	a.reloadMu.RUnlock()
+	if lastReload != nil {
+		reloadStatus = map[string]any{
+			"requested":    true,
+			"changed":      lastReload.Changed,
+			"applied_now":  append([]string(nil), lastReload.AppliedNow...),
+			"deferred":     append([]string(nil), lastReload.Deferred...),
+			"message":      lastReload.Message(),
+		}
+	}
 	metricsStatus := map[string]any{
 		"enabled": false,
 	}
@@ -393,38 +415,38 @@ func (a *App) Status() map[string]any {
 			"attach_code_actions":             a.Config.Policy.AttachCodeActions,
 			"max_code_actions_per_diagnostic": a.Config.Policy.MaxCodeActionsPerDiagnostic,
 		},
+		"reload":         reloadStatus,
 		"metrics":        metricsStatus,
 		"session_header": a.Config.MCP.SessionHeader,
 	}
 }
 
 func (a *App) peekDiagnostics(ctx context.Context, request socket.Request) (store.Entry, map[string][]string, bool, error) {
-	uri := protocol.DocumentURI("file://" + filepath.ToSlash(request.Path))
-	entry, ok := a.Store.Peek(uri)
-	if !ok {
-		return store.Entry{}, nil, false, nil
-	}
-	filtered := a.Policy.Apply(ctx, request.SessionID, string(uri), entry.Diagnostics)
-	entry.Diagnostics = filtered.Diagnostics
-	return entry, filtered.CodeActions, true, nil
+	return a.fetchDiagnostics(ctx, request)
 }
 
 func (a *App) drainDiagnostics(ctx context.Context, request socket.Request) (store.Entry, map[string][]string, bool, error) {
-	manager, _, err := a.Router.Resolve(ctx, request.Path)
-	if err != nil {
-		return a.peekDiagnostics(ctx, request)
+	return a.fetchDiagnostics(ctx, request)
+}
+
+func (a *App) fetchDiagnostics(ctx context.Context, request socket.Request) (store.Entry, map[string][]string, bool, error) {
+	if a.Diagnostics == nil {
+		return store.Entry{}, nil, false, nil
 	}
-	doc, err := manager.EnsureOpen(ctx, request.Path)
+	result, err := a.Diagnostics.Fetch(ctx, policy.DiagnosticsRequest{
+		Path:         request.Path,
+		URI:          request.URI,
+		SessionID:    request.SessionID,
+		Freshness:    request.DiagnosticsFreshness(),
+		Presentation: request.DiagnosticsPresentation(),
+	})
 	if err != nil {
 		return store.Entry{}, nil, false, err
 	}
-	entry, ok, waitErr := a.Store.Wait(ctx, doc.URI, doc.Version, 1200*time.Millisecond)
-	if !ok {
-		return store.Entry{}, nil, false, waitErr
+	if !result.Found {
+		return store.Entry{}, nil, false, nil
 	}
-	filtered := a.Policy.Apply(ctx, request.SessionID, string(doc.URI), entry.Diagnostics)
-	entry.Diagnostics = filtered.Diagnostics
-	return entry, filtered.CodeActions, true, nil
+	return result.Entry, result.CodeActions, true, nil
 }
 
 func (a *App) handleWatchedFile(ctx context.Context, path string) error {
@@ -436,27 +458,13 @@ func (a *App) handleWatchedFile(ctx context.Context, path string) error {
 	return err
 }
 
-func (a *App) syncWatcherRoots(ctx context.Context) {
-	ticker := time.NewTicker(time.Second)
-	defer ticker.Stop()
-	for {
-		select {
-		case <-ctx.Done():
-			return
-		case <-ticker.C:
-			for _, state := range a.Router.States() {
-				a.mu.Lock()
-				_, seen := a.watched[state.Root]
-				if !seen {
-					a.watched[state.Root] = struct{}{}
-				}
-				a.mu.Unlock()
-				if !seen {
-					_ = a.Watcher.Add(state.Root)
-				}
-			}
-		}
+func (a *App) watcherRoots() []string {
+	states := a.Router.States()
+	roots := make([]string, 0, len(states))
+	for _, state := range states {
+		roots = append(roots, state.Root)
 	}
+	return roots
 }
 
 func (a *App) enforceIdle(ctx context.Context) {

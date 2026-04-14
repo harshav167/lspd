@@ -47,17 +47,15 @@ func callHierarchyHandler(deps Dependencies) func(context.Context, sdkmcp.CallTo
 		if args.Direction != "incoming" && args.Direction != "outgoing" {
 			return sdkmcp.NewToolResultError("direction must be either \"incoming\" or \"outgoing\""), nil
 		}
-		manager, _, err := deps.Router.Resolve(ctx, args.Path)
+		service, err := resolvePositionService(ctx, deps, positionArgs{
+			Path:      args.Path,
+			Line:      args.Line,
+			Character: args.Character,
+		})
 		if err != nil {
 			return sdkmcp.NewToolResultError(err.Error()), nil
 		}
-		if _, err := manager.EnsureOpen(ctx, args.Path); err != nil {
-			return sdkmcp.NewToolResultError(err.Error()), nil
-		}
-		items, err := manager.PrepareCallHierarchy(ctx, &protocol.CallHierarchyPrepareParams{TextDocumentPositionParams: protocol.TextDocumentPositionParams{
-			TextDocument: protocol.TextDocumentIdentifier{URI: documentURI(args.Path)},
-			Position:     protocol.Position{Line: uint32(max(args.Line-1, 0)), Character: uint32(max(args.Character-1, 0))},
-		}})
+		items, err := service.manager.PrepareCallHierarchy(ctx, service.callHierarchyPrepareParams())
 		if err != nil {
 			return sdkmcp.NewToolResultError(err.Error()), nil
 		}
@@ -68,13 +66,13 @@ func callHierarchyHandler(deps Dependencies) func(context.Context, sdkmcp.CallTo
 		item := summarizeCallHierarchyItem(items[0])
 		response.Item = &item
 		if args.Direction == "incoming" {
-			incoming, incomingErr := manager.IncomingCalls(ctx, &protocol.CallHierarchyIncomingCallsParams{Item: items[0]})
+			incoming, incomingErr := service.manager.IncomingCalls(ctx, &protocol.CallHierarchyIncomingCallsParams{Item: items[0]})
 			if incomingErr != nil {
 				return sdkmcp.NewToolResultError(incomingErr.Error()), nil
 			}
 			response.Calls = summarizeIncomingCalls(incoming)
 		} else {
-			outgoing, outgoingErr := manager.OutgoingCalls(ctx, &protocol.CallHierarchyOutgoingCallsParams{Item: items[0]})
+			outgoing, outgoingErr := service.manager.OutgoingCalls(ctx, &protocol.CallHierarchyOutgoingCallsParams{Item: items[0]})
 			if outgoingErr != nil {
 				return sdkmcp.NewToolResultError(outgoingErr.Error()), nil
 			}

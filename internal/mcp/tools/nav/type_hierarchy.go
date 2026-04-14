@@ -35,20 +35,15 @@ func typeHierarchyHandler(deps Dependencies) func(context.Context, sdkmcp.CallTo
 		if args.Direction != "super" && args.Direction != "sub" {
 			return sdkmcp.NewToolResultError("direction must be either \"super\" or \"sub\""), nil
 		}
-		manager, _, err := deps.Router.Resolve(ctx, args.Path)
+		service, err := resolvePositionService(ctx, deps, positionArgs{
+			Path:      args.Path,
+			Line:      args.Line,
+			Character: args.Character,
+		})
 		if err != nil {
 			return sdkmcp.NewToolResultError(err.Error()), nil
 		}
-		if _, err := manager.EnsureOpen(ctx, args.Path); err != nil {
-			return sdkmcp.NewToolResultError(err.Error()), nil
-		}
-		items, err := manager.PrepareTypeHierarchy(ctx, map[string]any{
-			"textDocument": map[string]any{"uri": documentURI(args.Path)},
-			"position": map[string]any{
-				"line":      max(args.Line-1, 0),
-				"character": max(args.Character-1, 0),
-			},
-		})
+		items, err := service.manager.PrepareTypeHierarchy(ctx, service.typeHierarchyPrepareParams())
 		if err != nil {
 			return sdkmcp.NewToolResultError(err.Error()), nil
 		}
@@ -59,9 +54,9 @@ func typeHierarchyHandler(deps Dependencies) func(context.Context, sdkmcp.CallTo
 		item := summarizeTypeHierarchyItem(items[0])
 		response.Item = &item
 		if args.Direction == "super" {
-			items, err = manager.Supertypes(ctx, items[0])
+			items, err = service.manager.Supertypes(ctx, items[0])
 		} else {
-			items, err = manager.Subtypes(ctx, items[0])
+			items, err = service.manager.Subtypes(ctx, items[0])
 		}
 		if err != nil {
 			return sdkmcp.NewToolResultError(err.Error()), nil

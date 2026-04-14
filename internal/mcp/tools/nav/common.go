@@ -61,20 +61,125 @@ type commandSummary struct {
 	Arguments []any  `json:"arguments,omitempty"`
 }
 
-func resolvePosition(ctx context.Context, deps Dependencies, args positionArgs) (Dependencies, protocol.TextDocumentPositionParams, error) {
-	manager, _, err := deps.Router.Resolve(ctx, args.Path)
+type documentService struct {
+	manager *client.Manager
+	path    string
+	doc     client.Document
+}
+
+type positionService struct {
+	documentService
+	position protocol.Position
+}
+
+type workspaceService struct {
+	manager *client.Manager
+}
+
+func resolveDocumentService(ctx context.Context, deps Dependencies, path string) (documentService, error) {
+	manager, doc, _, err := deps.Router.ResolveDocument(ctx, path)
 	if err != nil {
-		return deps, protocol.TextDocumentPositionParams{}, err
+		return documentService{}, err
 	}
-	doc, err := manager.EnsureOpen(ctx, args.Path)
+	return documentService{manager: manager, path: path, doc: doc}, nil
+}
+
+func resolvePositionService(ctx context.Context, deps Dependencies, args positionArgs) (positionService, error) {
+	document, err := resolveDocumentService(ctx, deps, args.Path)
 	if err != nil {
-		return deps, protocol.TextDocumentPositionParams{}, err
+		return positionService{}, err
 	}
-	_ = doc
-	return deps, protocol.TextDocumentPositionParams{
-		TextDocument: protocol.TextDocumentIdentifier{URI: protocol.DocumentURI("file://" + filepath.ToSlash(args.Path))},
-		Position:     protocol.Position{Line: uint32(max(args.Line-1, 0)), Character: uint32(max(args.Character-1, 0))},
+	return positionService{
+		documentService: document,
+		position: protocol.Position{
+			Line:      uint32(max(args.Line-1, 0)),
+			Character: uint32(max(args.Character-1, 0)),
+		},
 	}, nil
+}
+
+func resolveWorkspaceService(ctx context.Context, deps Dependencies, path string) (workspaceService, error) {
+	if path != "" {
+		manager, _, err := deps.Router.Resolve(ctx, path)
+		if err != nil {
+			return workspaceService{}, err
+		}
+		return workspaceService{manager: manager}, nil
+	}
+	for _, manager := range deps.Router.Snapshot() {
+		return workspaceService{manager: manager}, nil
+	}
+	return workspaceService{}, fmt.Errorf("path is required before any language server has been started")
+}
+
+func (s documentService) textDocument() protocol.TextDocumentIdentifier {
+	return protocol.TextDocumentIdentifier{URI: s.doc.URI}
+}
+
+func (s documentService) documentSymbolParams() *protocol.DocumentSymbolParams {
+	return &protocol.DocumentSymbolParams{TextDocument: s.textDocument()}
+}
+
+func (s documentService) formattingParams() *protocol.DocumentFormattingParams {
+	return &protocol.DocumentFormattingParams{TextDocument: s.textDocument()}
+}
+
+func (s documentService) codeActionParams(args rangeArgs, diagnostics []protocol.Diagnostic) *protocol.CodeActionParams {
+	return &protocol.CodeActionParams{
+		TextDocument: s.textDocument(),
+		Range: protocol.Range{
+			Start: protocol.Position{Line: uint32(max(args.StartLine-1, 0)), Character: uint32(max(args.StartCharacter-1, 0))},
+			End:   protocol.Position{Line: uint32(max(args.EndLine-1, 0)), Character: uint32(max(args.EndCharacter-1, 0))},
+		},
+		Context: protocol.CodeActionContext{Diagnostics: diagnostics},
+	}
+}
+
+func (s positionService) textDocumentPosition() protocol.TextDocumentPositionParams {
+	return protocol.TextDocumentPositionParams{
+		TextDocument: s.textDocument(),
+		Position:     s.position,
+	}
+}
+
+func (s positionService) definitionParams() *protocol.DefinitionParams {
+	return &protocol.DefinitionParams{TextDocumentPositionParams: s.textDocumentPosition()}
+}
+
+func (s positionService) referenceParams(includeDeclaration bool) *protocol.ReferenceParams {
+	return &protocol.ReferenceParams{
+		TextDocumentPositionParams: s.textDocumentPosition(),
+		Context:                    protocol.ReferenceContext{IncludeDeclaration: includeDeclaration},
+	}
+}
+
+func (s positionService) hoverParams() *protocol.HoverParams {
+	return &protocol.HoverParams{TextDocumentPositionParams: s.textDocumentPosition()}
+}
+
+func (s positionService) renameParams(newName string) *protocol.RenameParams {
+	return &protocol.RenameParams{
+		TextDocumentPositionParams: s.textDocumentPosition(),
+		NewName:                    newName,
+	}
+}
+
+func (s positionService) callHierarchyPrepareParams() *protocol.CallHierarchyPrepareParams {
+	return &protocol.CallHierarchyPrepareParams{TextDocumentPositionParams: s.textDocumentPosition()}
+}
+
+func (s positionService) typeHierarchyPrepareParams() map[string]any {
+	return map[string]any{
+		"textDocument": map[string]any{"uri": s.doc.URI},
+		"position": map[string]any{
+			"line":      s.position.Line,
+			"character": s.position.Character,
+		},
+	}
+}
+
+func (s workspaceService) workspaceSymbolParams(query string) *protocol.WorkspaceSymbolParams {
+	return &protocol.WorkspaceSymbolParams{Query: query}
 }
 
 func responseJSON[T any](payload T) (*sdkmcp.CallToolResult, error) {
@@ -93,10 +198,6 @@ func pathFromURI(raw string) string {
 		return raw
 	}
 	return filepath.Clean(parsed.Path)
-}
-
-func documentURI(path string) protocol.DocumentURI {
-	return protocol.DocumentURI("file://" + filepath.ToSlash(path))
 }
 
 func locationFromProtocol(location protocol.Location) format.Location {

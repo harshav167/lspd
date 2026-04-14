@@ -140,7 +140,7 @@ func (s *Supervisor) replaceManager(ctx context.Context, current *client.Manager
 		return nil, err
 	}
 	for _, doc := range current.TrackedDocs() {
-		if _, openErr := replacement.EnsureOpen(ctx, doc.Path); openErr != nil {
+		if openErr := replacement.RestoreDocument(ctx, doc); openErr != nil {
 			s.logger.Debug("document re-registration failed", "language", s.cfg.Name, "path", doc.Path, "error", openErr)
 		}
 	}

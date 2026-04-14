@@ -25,7 +25,6 @@ type Dependencies struct {
 	Store   *store.Store
 	Policy  *policy.Engine
 	Logger  *slog.Logger
-	Touch   func()
 	Metrics *metrics.Registry
 }
 
@@ -58,9 +57,6 @@ func NewServer(cfg config.Config, deps Dependencies) *Server {
 		srv,
 		mcpsdk.WithHeartbeatInterval(5*time.Second),
 		mcpsdk.WithHTTPContextFunc(func(ctx context.Context, r *http.Request) context.Context {
-			if deps.Touch != nil {
-				deps.Touch()
-			}
 			return WithSessionID(ctx, RequestSessionID(r, cfg.MCP.SessionHeader))
 		}),
 	)

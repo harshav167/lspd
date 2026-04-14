@@ -46,24 +46,38 @@ func (h *handler) handle(ctx context.Context, request Request) Response {
 			h.forget(request)
 		}
 		return Response{OK: true, Message: "forgotten"}
-	case "peek", "drain":
+	case "peek", "drain", "fetch":
 		var (
 			entry       store.Entry
 			codeActions map[string][]string
 			ok          bool
 			err         error
 		)
-		if request.Op == "drain" && request.Kind == "read" {
+		if request.Op == "drain" && request.Kind == "read" && request.Freshness == "" {
+			request.Freshness = request.DiagnosticsFreshness()
+			request.Presentation = request.DiagnosticsPresentation()
 			if h.peek != nil {
 				entry, codeActions, ok, err = h.peek(callCtx, request)
 			}
 			if err == nil && !ok && h.drain != nil {
 				entry, codeActions, ok, err = h.drain(callCtx, request)
 			}
-		} else if request.Op == "drain" && h.drain != nil {
+			if err != nil {
+				return Response{Message: err.Error()}
+			}
+			if !ok {
+				return Response{OK: true, Message: "not_found"}
+			}
+			return Response{OK: true, Entry: &entry, CodeActions: codeActions}
+		}
+		request.Freshness = request.DiagnosticsFreshness()
+		request.Presentation = request.DiagnosticsPresentation()
+		if request.Freshness == "peek" {
+			if h.peek != nil {
+				entry, codeActions, ok, err = h.peek(callCtx, request)
+			}
+		} else if h.drain != nil {
 			entry, codeActions, ok, err = h.drain(callCtx, request)
-		} else if h.peek != nil {
-			entry, codeActions, ok, err = h.peek(callCtx, request)
 		}
 		if err != nil {
 			return Response{Message: err.Error()}

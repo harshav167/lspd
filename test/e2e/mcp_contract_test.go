@@ -60,10 +60,10 @@ func TestMCPContractBoots(t *testing.T) {
 	diagnosticStore := store.New()
 	server := internalmcp.NewServer(cfg, internalmcp.Dependencies{
 		Config: nil,
-		Router: router.New(cfg, diagnosticStore, nil, nil),
+		Router: router.New(cfg, diagnosticStore, integrationLogger(), nil),
 		Store:  diagnosticStore,
 		Policy: policy.New(cfg.Policy, nil),
-		Logger: nil,
+		Logger: integrationLogger(),
 	})
 	port, err := server.Start()
 	if err != nil {
