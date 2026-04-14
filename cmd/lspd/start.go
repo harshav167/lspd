@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"syscall"
 	"time"
 
 	"github.com/harshav167/lspd/internal/daemon"
@@ -28,9 +29,26 @@ func runStart(args []string) error {
 		cmdArgs := append([]string{"start", "--foreground"}, args...)
 		cmd := exec.Command(executable, cmdArgs...)
 		cmd.Env = append(os.Environ(), daemonizedEnvVar+"=1")
-		cmd.Stdout = os.Stdout
-		cmd.Stderr = os.Stderr
-		return cmd.Start()
+		devNull, err := os.OpenFile(os.DevNull, os.O_RDWR, 0)
+		if err != nil {
+			return err
+		}
+		defer devNull.Close()
+		cmd.Stdin = devNull
+		cmd.Stdout = devNull
+		cmd.Stderr = devNull
+		cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
+		if err := cmd.Start(); err != nil {
+			return err
+		}
+		for i := 0; i < 20; i++ {
+			if port, ok := existingPort(*configPath); ok {
+				fmt.Println(port)
+				return nil
+			}
+			time.Sleep(250 * time.Millisecond)
+		}
+		return fmt.Errorf("lspd failed to become ready after background start")
 	}
 
 	app, err := daemon.New(*configPath, mustGetwd())
