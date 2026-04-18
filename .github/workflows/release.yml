@@ -83,6 +83,7 @@ jobs:
             artifacts/lspd-*
             artifacts/lsp-read-hook-*
             artifacts/checksums.txt
+            scripts/droid-launcher.sh
             scripts/session-start.sh
             scripts/install.sh
             scripts/uninstall.sh
