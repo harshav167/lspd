@@ -1,5 +1,5 @@
 #!/bin/sh
-# lspd installer — installs binaries/config and merges read/cleanup hooks without changing the droid entrypoint.
+# lspd installer — downloads pre-built binaries, merges hooks, zero dependencies.
 # Idempotent: safe to run multiple times.
 set -eu
 
@@ -49,22 +49,27 @@ if [ -x "$ROOT_DIR/lsp-read-hook" ]; then
 else
     curl -fsSL "$DOWNLOAD_BASE/lsp-read-hook-$OS-$ARCH" -o "$INSTALL_DIR/lsp-read-hook"
 fi
+if [ -f "$SCRIPT_DIR/session-start.sh" ]; then
+    cp "$SCRIPT_DIR/session-start.sh" "$INSTALL_DIR/lspd-session-start"
+else
+    curl -fsSL "$DOWNLOAD_BASE/session-start.sh" -o "$INSTALL_DIR/lspd-session-start"
+fi
 if [ -f "$SCRIPT_DIR/droid-launcher.sh" ]; then
     cp "$SCRIPT_DIR/droid-launcher.sh" "$INSTALL_DIR/droid-lsp"
 else
     curl -fsSL "$DOWNLOAD_BASE/droid-launcher.sh" -o "$INSTALL_DIR/droid-lsp"
 fi
-chmod +x "$INSTALL_DIR/lspd" "$INSTALL_DIR/lsp-read-hook" "$INSTALL_DIR/droid-lsp"
+chmod +x "$INSTALL_DIR/lspd" "$INSTALL_DIR/lsp-read-hook" "$INSTALL_DIR/lspd-session-start" "$INSTALL_DIR/droid-lsp"
 echo "    Installed to $INSTALL_DIR"
-echo "    Installed optional convenience wrapper as $INSTALL_DIR/droid-lsp"
-rm -f "$INSTALL_DIR/lspd-session-start"
 
-# Undo any previous wrapper promotion so regular `droid` remains untouched.
-if [ -x "$INSTALL_DIR/droid.real" ] && grep -q "DROID_LSP_WRAPPER" "$INSTALL_DIR/droid" 2>/dev/null; then
-    rm -f "$INSTALL_DIR/droid"
-    mv "$INSTALL_DIR/droid.real" "$INSTALL_DIR/droid"
-    echo "==> Restored original droid binary"
+# Promote the wrapper to the regular `droid` command while preserving the real binary.
+if [ -x "$INSTALL_DIR/droid" ] && ! grep -q "DROID_LSP_WRAPPER" "$INSTALL_DIR/droid" 2>/dev/null; then
+    mv "$INSTALL_DIR/droid" "$INSTALL_DIR/droid.real"
+    echo "==> Backed up real droid to $INSTALL_DIR/droid.real"
 fi
+cp "$INSTALL_DIR/droid-lsp" "$INSTALL_DIR/droid"
+chmod +x "$INSTALL_DIR/droid"
+echo "==> Installed lspd bootstrap wrapper as $INSTALL_DIR/droid"
 
 # Write config (skip if exists — don't overwrite user customizations)
 if [ ! -f "$CONFIG_DIR/lspd.yaml" ]; then
@@ -104,51 +109,60 @@ if "hooks" not in settings:
 if "general" not in settings:
     settings["general"] = {}
 
-events_to_clean = ["SessionStart", "PostToolUse", "SessionEnd"]
+settings["general"]["ideAutoConnect"] = True
 
-for event in events_to_clean:
-    existing = settings["hooks"].get(event, [])
-    cleaned = [
-        g for g in existing
-        if not any(
-            "lspd" in h.get("command", "") or "lsp-read-hook" in h.get("command", "")
-            for h in g.get("hooks", [])
-        )
-    ]
-    if cleaned:
-        settings["hooks"][event] = cleaned
-    elif event in settings["hooks"]:
-        del settings["hooks"][event]
-
-session_scoped_hooks = {
+lspd_hooks = {
+    "SessionStart": {
+        "matcher": "",
+        "hooks": [{"type": "command", "command": os.path.join(install_dir, "lspd-session-start"), "timeout": 5}]
+    },
     "PostToolUse": {
         "matcher": "Read",
         "hooks": [{"type": "command", "command": "LSPD_SOCKET_PATH=" + os.path.join(home, ".factory/run/lspd/lspd.sock") + " " + os.path.join(install_dir, "lsp-read-hook"), "timeout": 3}]
     },
-    "SessionEnd": {
-        "matcher": ".*",
-        "hooks": [{"type": "command", "command": os.path.join(install_dir, "lspd") + " forget --session \"$session_id\"", "timeout": 2}]
-    },
 }
 
-for event, hook_group in session_scoped_hooks.items():
+for event, new_hook in lspd_hooks.items():
     existing = settings["hooks"].get(event, [])
-    existing.append(hook_group)
-    settings["hooks"][event] = existing
+    cleaned = [g for g in existing if not any("lspd" in h.get("command", "") or "lsp-read-hook" in h.get("command", "") for h in g.get("hooks", []))]
+    cleaned.append(new_hook)
+    settings["hooks"][event] = cleaned
 
 with open(settings_path, "w") as f:
     json.dump(settings, f, indent=2)
 
-print("    Read/SessionEnd hooks merged")
+print("    Hooks merged (ideAutoConnect: true)")
 PY
 
-echo ""
-echo "Done! Start lspd explicitly for a coding session:"
-echo "    lspd start --config $CONFIG_DIR/lspd.yaml"
-echo "    droid"
-echo ""
-echo "lspd will exit automatically after its idle timeout, or you can stop it manually:"
-echo "    lspd stop --config $CONFIG_DIR/lspd.yaml"
+# Start or discover lspd so the lock file exists before droid starts.
+echo "==> Ensuring lspd is ready..."
+PORT_FILE="$HOME/.factory/run/lspd/lspd.port"
+TMP_PORT="$PORT_FILE.tmp.$$"
+TMP_ERR="$PORT_FILE.err.$$"
+trap 'rm -f "$TMP_PORT" "$TMP_ERR"' EXIT
+mkdir -p "$(dirname "$PORT_FILE")"
+nohup "$INSTALL_DIR/lspd" start --foreground --config "$CONFIG_DIR/lspd.yaml" >"$TMP_PORT" 2>"$TMP_ERR" </dev/null &
+i=0
+while [ $i -lt 50 ]; do
+    if [ -s "$TMP_PORT" ]; then
+        cat "$TMP_PORT" >"$PORT_FILE"
+        break
+    fi
+    if [ -s "$PORT_FILE" ]; then
+        break
+    fi
+    i=$((i + 1))
+    sleep 0.1
+done
+if [ -s "$PORT_FILE" ]; then
+    PORT=$(cat "$PORT_FILE")
+    echo "    lspd ready on port $PORT"
+else
+    echo "    WARNING: lspd failed to become ready during install."
+    cat "$TMP_ERR" 2>/dev/null || true
+fi
 echo ""
 echo "Update:    curl -fsSL https://github.com/$REPO/releases/latest/download/install.sh | sh"
+echo "Done! Run 'droid' normally — lspd starts automatically."
+echo ""
 echo "Uninstall: curl -fsSL https://github.com/$REPO/releases/latest/download/uninstall.sh | sh"

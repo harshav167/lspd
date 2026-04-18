@@ -32,6 +32,12 @@ if [ -x "${BIN_DIR}/droid.real" ] && grep -q "DROID_LSP_WRAPPER" "${BIN_DIR}/dro
   mv "${BIN_DIR}/droid.real" "${BIN_DIR}/droid"
   ok "Restored original droid binary"
 fi
+rm -f "${BIN_DIR}/droid-lsp"
+if [ -x "${BIN_DIR}/droid.real" ] && grep -q "DROID_LSP_WRAPPER" "${BIN_DIR}/droid" 2>/dev/null; then
+  rm -f "${BIN_DIR}/droid"
+  mv "${BIN_DIR}/droid.real" "${BIN_DIR}/droid"
+  ok "Restored original droid binary"
+fi
 ok "Binaries removed"
 
 # ── 3. Remove config ─────────────────────────────────────────────────

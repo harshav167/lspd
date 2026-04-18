@@ -48,4 +48,5 @@ if [ ! -s "$PORT_FILE" ]; then
 fi
 
 export FACTORY_VSCODE_MCP_PORT="$(cat "$PORT_FILE")"
-exec "$(resolve_real_droid)" "$@"
+SETTINGS_JSON="${DROID_SETTINGS_JSON:-$HOME/.local/bin/droid-lsp-settings.json}"
+exec "$(resolve_real_droid)" --settings "$SETTINGS_JSON" "$@"

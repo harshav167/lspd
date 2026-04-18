@@ -63,7 +63,9 @@ func (m *Manager) warmup() {
 	ctx, cancel := context.WithTimeout(m.runCtx, timeout)
 	defer cancel()
 	if _, err := m.server.Symbols(ctx, &protocol.WorkspaceSymbolParams{Query: ""}); err != nil && ctx.Err() == nil {
-		m.logger.Debug("lsp warmup failed", "language", m.cfg.Name, "root", m.root, "error", err)
+		if m.logger != nil {
+			m.logger.Debug("lsp warmup failed", "language", m.cfg.Name, "root", m.root, "error", err)
+		}
 	}
 }
 

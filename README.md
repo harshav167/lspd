@@ -14,20 +14,19 @@ Built primarily for [Factory Droid](https://factory.ai), with [Codex CLI](https:
 curl -fsSL https://github.com/harshav167/lspd/releases/latest/download/install.sh | sh
 ```
 
-That's it. Start lspd for your current coding session, then run your agent normally:
+That's it. Now just run your agent normally:
 
 ```sh
-lspd start
 droid
 ```
 
 The installer:
 1. Downloads `lspd` and `lsp-read-hook` binaries for your platform
 2. Writes daemon config to `~/.factory/hooks/lsp/lspd.yaml`
-3. Merges the Read diagnostic hook and SessionEnd cleanup hook into your `~/.factory/settings.json` (non-destructive — your existing hooks are preserved)
-4. Leaves your regular `droid` command untouched
+3. Merges diagnostic hooks into your `~/.factory/settings.json` (non-destructive — your existing hooks are preserved)
+4. Enables IDE auto-discovery so Droid finds lspd automatically
 
-No wrapper script. No alias. No environment variables to set. `lspd start` starts the daemon for the current work session, registers itself via a lock file at `~/.factory/ide/`, and Droid auto-discovers it — the same mechanism the VS Code extension uses.
+No wrapper script. No alias. No environment variables to set. lspd starts via a SessionStart hook, registers itself via a lock file at `~/.factory/ide/`, and Droid auto-discovers it — the same mechanism the VS Code extension uses.
 
 ---
 
@@ -186,24 +185,19 @@ languages:
 curl -fsSL https://github.com/harshav167/lspd/releases/latest/download/install.sh | sh
 ```
 
-That's it. Start lspd explicitly for the current work session:
+That's it. Now just run your agent normally:
 
 ```sh
-lspd start
 droid
 ```
 
 The installer:
 1. Downloads `lspd` and `lsp-read-hook` binaries for your platform
 2. Writes daemon config to `~/.factory/hooks/lsp/lspd.yaml`
-3. Merges only the `Read` diagnostic hook plus `SessionEnd` cleanup hook into your `~/.factory/settings.json`
-4. Keeps your normal `droid` binary untouched
+3. Merges diagnostic hooks into your `~/.factory/settings.json` (non-destructive — your existing hooks are preserved)
+4. Enables IDE auto-discovery so Droid finds lspd automatically
 
-`lspd` is session-scoped by default. It shuts itself down after its idle timeout or when you run:
-
-```sh
-lspd stop
-```
+No wrapper script. No alias. No environment variables to set. lspd starts via a SessionStart hook, registers itself via a lock file at `~/.factory/ide/`, and Droid auto-discovers it — the same mechanism the VS Code extension uses.
 
 ### Update
 
@@ -219,7 +213,7 @@ Same command. It downloads the latest binaries and overwrites the old ones. Conf
 curl -fsSL https://github.com/harshav167/lspd/releases/latest/download/uninstall.sh | sh
 ```
 
-Removes binaries, hooks, optional convenience wrapper, and runtime state. Your config at `~/.factory/hooks/lsp/lspd.yaml` is kept unless you pass `--purge`.
+Removes binaries, hooks, and runtime state. Your config at `~/.factory/hooks/lsp/lspd.yaml` is kept unless you pass `--purge`.
 
 ---
 
