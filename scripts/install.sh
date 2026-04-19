@@ -141,25 +141,43 @@ TMP_PORT="$PORT_FILE.tmp.$$"
 TMP_ERR="$PORT_FILE.err.$$"
 trap 'rm -f "$TMP_PORT" "$TMP_ERR"' EXIT
 mkdir -p "$(dirname "$PORT_FILE")"
-nohup "$INSTALL_DIR/lspd" start --foreground --config "$CONFIG_DIR/lspd.yaml" >"$TMP_PORT" 2>"$TMP_ERR" </dev/null &
-i=0
-while [ $i -lt 50 ]; do
-    if [ -s "$TMP_PORT" ]; then
-        cat "$TMP_PORT" >"$PORT_FILE"
-        break
+if "$INSTALL_DIR/lspd" ping --config "$CONFIG_DIR/lspd.yaml" >/dev/null 2>&1; then
+    PORT="$("$INSTALL_DIR/lspd" status --config "$CONFIG_DIR/lspd.yaml" 2>/dev/null | sed -n 's/.*port=\([0-9][0-9]*\).*/\1/p' | head -n 1)"
+    if [ -n "${PORT:-}" ]; then
+        printf '%s\n' "$PORT" >"$PORT_FILE"
+        echo "    Reusing running lspd on port $PORT"
+    else
+        echo "    Reusing running lspd"
+    fi
+else
+    rm -f "$PORT_FILE"
+    "$INSTALL_DIR/lspd" stop --config "$CONFIG_DIR/lspd.yaml" >/dev/null 2>&1 || true
+    nohup "$INSTALL_DIR/lspd" start --foreground --config "$CONFIG_DIR/lspd.yaml" >"$TMP_PORT" 2>"$TMP_ERR" </dev/null &
+    i=0
+    while [ $i -lt 50 ]; do
+        if [ -s "$TMP_PORT" ]; then
+            cat "$TMP_PORT" >"$PORT_FILE"
+            break
+        fi
+        if "$INSTALL_DIR/lspd" ping --config "$CONFIG_DIR/lspd.yaml" >/dev/null 2>&1; then
+            break
+        fi
+        i=$((i + 1))
+        sleep 0.1
+    done
+    if [ ! -s "$PORT_FILE" ] && "$INSTALL_DIR/lspd" ping --config "$CONFIG_DIR/lspd.yaml" >/dev/null 2>&1; then
+        PORT="$("$INSTALL_DIR/lspd" status --config "$CONFIG_DIR/lspd.yaml" 2>/dev/null | sed -n 's/.*port=\([0-9][0-9]*\).*/\1/p' | head -n 1)"
+        if [ -n "${PORT:-}" ]; then
+            printf '%s\n' "$PORT" >"$PORT_FILE"
+        fi
     fi
     if [ -s "$PORT_FILE" ]; then
-        break
+        PORT=$(cat "$PORT_FILE")
+        echo "    lspd ready on port $PORT"
+    else
+        echo "    WARNING: lspd failed to start. It will start on first SessionStart hook."
+        cat "$TMP_ERR" 2>/dev/null || true
     fi
-    i=$((i + 1))
-    sleep 0.1
-done
-if [ -s "$PORT_FILE" ]; then
-    PORT=$(cat "$PORT_FILE")
-    echo "    lspd ready on port $PORT"
-else
-    echo "    WARNING: lspd failed to become ready during install."
-    cat "$TMP_ERR" 2>/dev/null || true
 fi
 echo ""
 echo "Update:    curl -fsSL https://github.com/$REPO/releases/latest/download/install.sh | sh"
