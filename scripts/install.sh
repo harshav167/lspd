@@ -7,6 +7,8 @@ REPO="harshav167/lspd"
 INSTALL_DIR="${LSPD_INSTALL_DIR:-$HOME/.local/bin}"
 CONFIG_DIR="$HOME/.factory/hooks/lsp"
 SETTINGS_FILE="$HOME/.factory/settings.json"
+SCRIPT_DIR="$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)"
+ROOT_DIR="$(CDPATH= cd -- "$SCRIPT_DIR/.." && pwd)"
 
 # Detect platform
 OS="$(uname -s | tr '[:upper:]' '[:lower:]')"
@@ -35,19 +37,39 @@ mkdir -p "$HOME/.factory/run/lspd"
 mkdir -p "$HOME/.factory/logs/lspd"
 mkdir -p "$HOME/.factory/ide"
 
-# Check if lspd is already running (upgrade vs idle install)
-ALREADY_RUNNING=false
-if [ -x "$INSTALL_DIR/lspd" ] && "$INSTALL_DIR/lspd" ping --config "$CONFIG_DIR/lspd.yaml" >/dev/null 2>&1; then
-    ALREADY_RUNNING=true
+# Install binaries/scripts from local repo when available, otherwise fall back to release assets.
+echo "==> Installing binaries and scripts..."
+if [ -x "$ROOT_DIR/lspd" ]; then
+    cp "$ROOT_DIR/lspd" "$INSTALL_DIR/lspd"
+else
+    curl -fsSL "$DOWNLOAD_BASE/lspd-$OS-$ARCH" -o "$INSTALL_DIR/lspd"
 fi
-
-# Download binaries
-echo "==> Downloading binaries..."
-curl -fsSL "$DOWNLOAD_BASE/lspd-$OS-$ARCH" -o "$INSTALL_DIR/lspd"
-curl -fsSL "$DOWNLOAD_BASE/lsp-read-hook-$OS-$ARCH" -o "$INSTALL_DIR/lsp-read-hook"
-curl -fsSL "$DOWNLOAD_BASE/session-start.sh" -o "$INSTALL_DIR/lspd-session-start"
-chmod +x "$INSTALL_DIR/lspd" "$INSTALL_DIR/lsp-read-hook" "$INSTALL_DIR/lspd-session-start"
+if [ -x "$ROOT_DIR/lsp-read-hook" ]; then
+    cp "$ROOT_DIR/lsp-read-hook" "$INSTALL_DIR/lsp-read-hook"
+else
+    curl -fsSL "$DOWNLOAD_BASE/lsp-read-hook-$OS-$ARCH" -o "$INSTALL_DIR/lsp-read-hook"
+fi
+if [ -f "$SCRIPT_DIR/session-start.sh" ]; then
+    cp "$SCRIPT_DIR/session-start.sh" "$INSTALL_DIR/lspd-session-start"
+else
+    curl -fsSL "$DOWNLOAD_BASE/session-start.sh" -o "$INSTALL_DIR/lspd-session-start"
+fi
+if [ -f "$SCRIPT_DIR/droid-launcher.sh" ]; then
+    cp "$SCRIPT_DIR/droid-launcher.sh" "$INSTALL_DIR/droid-lsp"
+else
+    curl -fsSL "$DOWNLOAD_BASE/droid-launcher.sh" -o "$INSTALL_DIR/droid-lsp"
+fi
+chmod +x "$INSTALL_DIR/lspd" "$INSTALL_DIR/lsp-read-hook" "$INSTALL_DIR/lspd-session-start" "$INSTALL_DIR/droid-lsp"
 echo "    Installed to $INSTALL_DIR"
+
+# Promote the wrapper to the regular `droid` command while preserving the real binary.
+if [ -x "$INSTALL_DIR/droid" ] && ! grep -q "DROID_LSP_WRAPPER" "$INSTALL_DIR/droid" 2>/dev/null; then
+    mv "$INSTALL_DIR/droid" "$INSTALL_DIR/droid.real"
+    echo "==> Backed up real droid to $INSTALL_DIR/droid.real"
+fi
+cp "$INSTALL_DIR/droid-lsp" "$INSTALL_DIR/droid"
+chmod +x "$INSTALL_DIR/droid"
+echo "==> Installed lspd bootstrap wrapper as $INSTALL_DIR/droid"
 
 # Write config (skip if exists — don't overwrite user customizations)
 if [ ! -f "$CONFIG_DIR/lspd.yaml" ]; then
@@ -119,19 +141,53 @@ with open(settings_path, "w") as f:
 print("    Hooks merged (ideAutoConnect: true)")
 PY
 
-if [ "$ALREADY_RUNNING" = true ]; then
-    echo "==> lspd is already running."
-    echo "    Active sessions stay connected. The updated binary will be picked up on the next SessionStart."
+# Start or discover lspd so the lock file exists before droid starts.
+echo "==> Ensuring lspd is ready..."
+PORT_FILE="$HOME/.factory/run/lspd/lspd.port"
+TMP_PORT="$PORT_FILE.tmp.$$"
+TMP_ERR="$PORT_FILE.err.$$"
+trap 'rm -f "$TMP_PORT" "$TMP_ERR"' EXIT
+mkdir -p "$(dirname "$PORT_FILE")"
+if "$INSTALL_DIR/lspd" ping --config "$CONFIG_DIR/lspd.yaml" >/dev/null 2>&1; then
+    PORT="$("$INSTALL_DIR/lspd" status --config "$CONFIG_DIR/lspd.yaml" 2>/dev/null | sed -n 's/.*port=\([0-9][0-9]*\).*/\1/p' | head -n 1)"
+    if [ -n "${PORT:-}" ]; then
+        printf '%s\n' "$PORT" >"$PORT_FILE"
+        echo "    Reusing running lspd on port $PORT"
+    else
+        echo "    Reusing running lspd"
+    fi
 else
-    echo "==> lspd is not running yet."
-    echo "    That's expected: the SessionStart hook launches it when you run plain 'droid'."
+    rm -f "$PORT_FILE"
+    "$INSTALL_DIR/lspd" stop --config "$CONFIG_DIR/lspd.yaml" >/dev/null 2>&1 || true
+    nohup "$INSTALL_DIR/lspd" start --foreground --config "$CONFIG_DIR/lspd.yaml" >"$TMP_PORT" 2>"$TMP_ERR" </dev/null &
+    i=0
+    while [ $i -lt 50 ]; do
+        if [ -s "$TMP_PORT" ]; then
+            cat "$TMP_PORT" >"$PORT_FILE"
+            break
+        fi
+        if "$INSTALL_DIR/lspd" ping --config "$CONFIG_DIR/lspd.yaml" >/dev/null 2>&1; then
+            break
+        fi
+        i=$((i + 1))
+        sleep 0.1
+    done
+    if [ ! -s "$PORT_FILE" ] && "$INSTALL_DIR/lspd" ping --config "$CONFIG_DIR/lspd.yaml" >/dev/null 2>&1; then
+        PORT="$("$INSTALL_DIR/lspd" status --config "$CONFIG_DIR/lspd.yaml" 2>/dev/null | sed -n 's/.*port=\([0-9][0-9]*\).*/\1/p' | head -n 1)"
+        if [ -n "${PORT:-}" ]; then
+            printf '%s\n' "$PORT" >"$PORT_FILE"
+        fi
+    fi
+    if [ -s "$PORT_FILE" ]; then
+        PORT=$(cat "$PORT_FILE")
+        echo "    lspd ready on port $PORT"
+    else
+        echo "    WARNING: lspd failed to start. It will start on first SessionStart hook."
+        cat "$TMP_ERR" 2>/dev/null || true
+    fi
 fi
-
-echo ""
-echo "Done! Run 'droid' normally."
-echo "  - SessionStart launches lspd when needed"
-echo "  - PostToolUse(Read) injects read-time diagnostics"
-echo "  - SessionEnd stops lspd cleanly"
 echo ""
 echo "Update:    curl -fsSL https://github.com/$REPO/releases/latest/download/install.sh | sh"
+echo "Done! Run 'droid' normally — lspd starts automatically."
+echo ""
 echo "Uninstall: curl -fsSL https://github.com/$REPO/releases/latest/download/uninstall.sh | sh"

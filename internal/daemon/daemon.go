@@ -46,6 +46,9 @@ type App struct {
 	reloadMu    sync.RWMutex
 	ideLockPath string
 	lastReload  *config.ReloadReport
+	healthMu    sync.Mutex
+	healthFails map[string]int
+	idleTimer   *idleTimer
 }
 
 // New creates the daemon app.
@@ -64,6 +67,8 @@ func New(configPath, cwd string) (*App, error) {
 		Store:         diagnosticStore,
 		Metrics:       metrics.New(),
 		startedAt:     time.Now(),
+		healthFails:   map[string]int{},
+		idleTimer:     newIdleTimer(cfg.IdleTimeout.Duration),
 	}
 	var appRouter *router.Router
 	app.Policy = policy.New(cfg.Policy, func(ctx context.Context, path string, diagnostic protocol.Diagnostic) ([]string, error) {
@@ -117,7 +122,24 @@ func New(configPath, cwd string) (*App, error) {
 		Forget:        func(request socket.Request) { app.Diagnostics.ResetSession(request.SessionID) },
 		Status:        app.Status,
 		Reload:        app.Reload,
+		Touch:         app.touchIdle,
 		RecordRequest: app.Metrics.RecordRequest,
+	})
+	app.MCP.OnExit(func(err error) {
+		if app.Logger != nil {
+			app.Logger.Error("mcp server exited unexpectedly", "error", err)
+		}
+		if app.cancel != nil {
+			app.cancel()
+		}
+	})
+	app.Socket.OnExit(func(err error) {
+		if app.Logger != nil {
+			app.Logger.Error("socket server exited unexpectedly", "error", err)
+		}
+		if app.cancel != nil {
+			app.cancel()
+		}
 	})
 	if cfg.Watcher.Enabled {
 		fileWatcher, watcherErr := watcher.New(cfg.Watcher.Debounce.Duration, app.handleWatchedFile)
@@ -159,6 +181,8 @@ func (a *App) Start(ctx context.Context) error {
 		a.Watcher.Run(ctx)
 		go a.Watcher.SyncRoots(ctx, a.watcherRoots)
 	}
+	go a.monitorHealth(ctx)
+	go a.enforceIdle(ctx)
 	if a.Config.Metrics.Enabled {
 		mux := http.NewServeMux()
 		mux.Handle("/metrics", a.Metrics.Handler())
@@ -182,6 +206,77 @@ func (a *App) Start(ctx context.Context) error {
 
 	started = true
 	return nil
+}
+
+func (a *App) monitorHealth(ctx context.Context) {
+	ticker := time.NewTicker(30 * time.Second)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			a.checkHealth(ctx)
+		}
+	}
+}
+
+func (a *App) checkHealth(ctx context.Context) {
+	checks := map[string]bool{
+		"socket": a.socketHealthy(),
+		"lock":   a.ideLockHealthy(),
+		"mcp":    a.mcpHealthy(ctx),
+	}
+
+	a.healthMu.Lock()
+	defer a.healthMu.Unlock()
+	for name, ok := range checks {
+		if ok {
+			a.healthFails[name] = 0
+			continue
+		}
+		a.healthFails[name]++
+		if a.healthFails[name] >= 3 {
+			if a.Logger != nil {
+				a.Logger.Error("daemon health check failed", "surface", name, "consecutive_failures", a.healthFails[name])
+			}
+			if a.cancel != nil {
+				a.cancel()
+			}
+			return
+		}
+	}
+}
+
+func (a *App) socketHealthy() bool {
+	info, err := os.Stat(a.Config.Socket.Path)
+	return err == nil && (info.Mode()&os.ModeSocket) != 0
+}
+
+func (a *App) ideLockHealthy() bool {
+	if a.ideLockPath == "" {
+		return false
+	}
+	_, err := os.Stat(a.ideLockPath)
+	return err == nil
+}
+
+func (a *App) mcpHealthy(ctx context.Context) bool {
+	if a.port == 0 {
+		return false
+	}
+	healthCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
+	defer cancel()
+	req, err := http.NewRequestWithContext(healthCtx, http.MethodGet, fmt.Sprintf("http://%s:%d%s", a.Config.MCP.Host, a.port, a.Config.MCP.Endpoint), nil)
+	if err != nil {
+		return false
+	}
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return false
+	}
+	defer resp.Body.Close()
+	return resp.StatusCode < 500
 }
 
 // writeIdeLockFile writes a Droid-compatible IDE lock file so that
@@ -258,6 +353,9 @@ func (a *App) Reload(ctx context.Context) error {
 		a.Policy.UpdateConfig(cfg.Policy)
 		if a.Router != nil {
 			a.Router.UpdateConfig(cfg)
+		}
+		if a.idleTimer != nil {
+			a.idleTimer.update(cfg.IdleTimeout.Duration)
 		}
 	}
 	if a.Logger != nil {
@@ -363,11 +461,11 @@ func (a *App) Status() map[string]any {
 	a.reloadMu.RUnlock()
 	if lastReload != nil {
 		reloadStatus = map[string]any{
-			"requested":    true,
-			"changed":      lastReload.Changed,
-			"applied_now":  append([]string(nil), lastReload.AppliedNow...),
-			"deferred":     append([]string(nil), lastReload.Deferred...),
-			"message":      lastReload.Message(),
+			"requested":   true,
+			"changed":     lastReload.Changed,
+			"applied_now": append([]string(nil), lastReload.AppliedNow...),
+			"deferred":    append([]string(nil), lastReload.Deferred...),
+			"message":     lastReload.Message(),
 		}
 	}
 	metricsStatus := map[string]any{
@@ -468,5 +566,31 @@ func (a *App) watcherRoots() []string {
 }
 
 func (a *App) enforceIdle(ctx context.Context) {
-	_ = ctx
+	if a.idleTimer == nil || a.idleTimer.timeout <= 0 {
+		return
+	}
+	ticker := time.NewTicker(time.Second)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			if a.idleTimer.idleFor(time.Now()) >= a.idleTimer.timeout {
+				if a.Logger != nil {
+					a.Logger.Info("idle timeout reached, shutting down", "timeout", a.idleTimer.timeout.String())
+				}
+				if a.cancel != nil {
+					a.cancel()
+				}
+				return
+			}
+		}
+	}
+}
+
+func (a *App) touchIdle() {
+	if a.idleTimer != nil {
+		a.idleTimer.touch()
+	}
 }

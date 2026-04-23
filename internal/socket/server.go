@@ -21,6 +21,7 @@ type Server struct {
 	wg       sync.WaitGroup
 	ctx      context.Context
 	cancel   context.CancelFunc
+	onExit   func(error)
 }
 
 // Callbacks customize socket semantics.
@@ -48,6 +49,11 @@ func NewServer(path string, diagnosticStore *store.Store, callbacks Callbacks) *
 	}}
 }
 
+// OnExit registers a callback for unexpected serve-loop termination.
+func (s *Server) OnExit(fn func(error)) {
+	s.onExit = fn
+}
+
 // Start starts the socket server.
 func (s *Server) Start(ctx context.Context) error {
 	serveCtx, cancel := context.WithCancel(ctx)
@@ -69,6 +75,9 @@ func (s *Server) Start(ctx context.Context) error {
 		for {
 			conn, acceptErr := listener.Accept()
 			if acceptErr != nil {
+				if serveCtx.Err() == nil && s.onExit != nil {
+					s.onExit(acceptErr)
+				}
 				return
 			}
 			s.wg.Add(1)

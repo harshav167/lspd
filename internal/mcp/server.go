@@ -35,6 +35,7 @@ type Server struct {
 	http     *http.Server
 	listener net.Listener
 	cancel   context.CancelFunc
+	onExit   func(error)
 }
 
 // NewServer creates the MCP server.
@@ -69,6 +70,11 @@ func NewServer(cfg config.Config, deps Dependencies) *Server {
 	}
 }
 
+// OnExit registers a callback for unexpected HTTP serve-loop termination.
+func (s *Server) OnExit(fn func(error)) {
+	s.onExit = fn
+}
+
 // Start starts the MCP server on a local random port.
 func (s *Server) Start() (int, error) {
 	lc := net.ListenConfig{KeepAlive: 30 * time.Second}
@@ -80,7 +86,10 @@ func (s *Server) Start() (int, error) {
 	heartbeatCtx, cancel := context.WithCancel(context.Background())
 	s.cancel = cancel
 	go func() {
-		_ = s.http.Serve(listener)
+		err := s.http.Serve(listener)
+		if err != nil && err != http.ErrServerClosed && s.onExit != nil {
+			s.onExit(err)
+		}
 	}()
 	go s.heartbeatLoop(heartbeatCtx)
 	return listener.Addr().(*net.TCPAddr).Port, nil
